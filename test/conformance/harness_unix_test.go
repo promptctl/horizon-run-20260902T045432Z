@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -142,15 +141,4 @@ func snapshotWithinBound(t *testing.T, world *World) Snapshot {
 		t.Fatalf("Snapshot did not return within %s, so it blocked rather than failed: opening a non-regular file is what this case exists to catch", snapshotBound)
 		return nil
 	}
-}
-
-// snapshotPaths lists what a snapshot holds, in a stable order, for a failure
-// message that is worth reading.
-func snapshotPaths(snapshot Snapshot) []string {
-	paths := make([]string, 0, len(snapshot))
-	for path := range snapshot {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	return paths
 }

@@ -509,6 +509,36 @@ func TestAVariableTheWorldSetsReachesTheProgram(t *testing.T) {
 	}
 }
 
+func TestTheForcedStampGOFLAGSKeepsWhatGoEnvAlreadyCarries(t *testing.T) {
+	// The forced-stamp build overrides GOFLAGS, and the override has to keep
+	// what was already there or it breaks builds for a reason that has nothing
+	// to do with what it is testing. Nothing checked that, and the check is
+	// not decoration: the previous version merged against os.Environ(), where
+	// GOFLAGS usually is not, and so silently kept nothing at all.
+	//
+	// GOENV, not GOFLAGS, is what this sets. `go env -w` is how GOFLAGS is
+	// normally set -- it writes that file, and the value never enters the
+	// environment -- and pointing GOENV at a scratch file is the only way to
+	// exercise the path a developer actually has. Setting GOFLAGS in the
+	// environment instead would test the one case that already worked.
+	settings := filepath.Join(t.TempDir(), "goenv")
+	if err := os.WriteFile(settings, []byte("GOFLAGS=-mod=mod\n"), 0o600); err != nil {
+		t.Fatalf("writing a go env file: %v", err)
+	}
+
+	goflags, err := goflagsForcingVCSStamp(environWith(environWithoutMakeflags(), "GOENV", settings))
+	if err != nil {
+		t.Fatalf("computing the forced-stamp GOFLAGS: %v", err)
+	}
+	if !strings.Contains(goflags, "-mod=mod") {
+		t.Errorf("the forced-stamp GOFLAGS is %q, which dropped -mod=mod from `go env GOFLAGS`; the one build in this suite that overrides GOFLAGS would be the only one built without the developer's settings, and a failure there is reported as a VCS-stamping problem", goflags)
+	}
+	// Last, because a later duplicate is what makes this an override at all.
+	if want := "-buildvcs=true"; !strings.HasSuffix(goflags, want) {
+		t.Errorf("the forced-stamp GOFLAGS is %q, want it to end with %q; an earlier -buildvcs=false would otherwise win and the build would carry no stamp", goflags, want)
+	}
+}
+
 func TestTheSnapshotRecordsASymlinkByItsTargetWithoutFollowingIt(t *testing.T) {
 	// A harness case, like the FIFO one in harness_unix_test.go: it pins a
 	// field of the snapshot record that every ExpectUnchanged in the suite
@@ -750,7 +780,24 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 	{
 		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
-				return err
+				// Skipped rather than propagated, and that changed when the
+				// walk widened from three known directories to the whole
+				// module. It now meets whatever is under the repo root: an
+				// untracked scratch directory, container build output, a
+				// restricted mount. Propagating turned a permission error on
+				// a file that has no doc comments into "walking the module
+				// root: permission denied", reported by the doc-comment case,
+				// blaming this convention for something unrelated to it.
+				//
+				// readImplementationSources, the walk this one mirrors,
+				// ignores per-entry errors for exactly that reason.
+				//
+				// The blind spot accepted, said plainly: a directory this
+				// process cannot read is not checked, so a doc comment
+				// orphaned inside one is not seen. The checked == 0 backstop
+				// below still catches a walk that reached nothing at all,
+				// which is the failure that would matter.
+				return nil
 			}
 			// testdata is skipped for the reason `go build` skips it: nothing
 			// under it is part of the build, so it is where a package grows
@@ -767,13 +814,32 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 			// needed; neither is sufficient. Verified by putting the fixture
 			// in and running each half with the other half's fix reverted.
 			//
-			// What this does NOT skip, deliberately: vendor, and directories
-			// whose names begin with "_" or "." other than .git, all of which
-			// `go build` also ignores. None exists in this module, and a tree
-			// that grows one gets a loud failure here rather than a silent
-			// gap -- the direction this suite errs in everywhere else.
+			// vendor is skipped too, and that reverses the call made when
+			// this walk was widened. The reasoning then was the one this
+			// suite uses everywhere -- a loud failure beats a silent gap --
+			// but it does not apply to vendor, and the difference is worth
+			// being exact about: a loud failure is only useful over code
+			// someone can fix. Vendored dependencies are not this project's
+			// to reformat or re-document, so holding them to this convention
+			// is not a loud warning, it is a gate that is red until the
+			// dependencies are removed. `go build` ignores vendor for its own
+			// reasons; this ignores it because the convention does not
+			// address it.
+			//
+			// The vendor skip is UNEXERCISED, unlike the testdata one next
+			// to it, and that is a deliberate limit rather than an oversight:
+			// a vendor directory at the module root is not an inert fixture,
+			// it changes how the whole module builds, so committing one to
+			// pin this line would cost more than the line is worth. It is
+			// three tokens in a condition that the testdata case already
+			// proves is reached.
+			//
+			// What this does NOT skip, still deliberately: directories whose
+			// names begin with "_" or "." other than .git, which `go build`
+			// also ignores. Those hold the project's own code when they hold
+			// anything, so the loud failure is the useful kind.
 			if entry.IsDir() {
-				if entry.Name() == "testdata" || entry.Name() == ".git" || path == filepath.Join(root, "bin") {
+				if entry.Name() == "testdata" || entry.Name() == ".git" || entry.Name() == "vendor" || path == filepath.Join(root, "bin") {
 					return filepath.SkipDir
 				}
 				return nil

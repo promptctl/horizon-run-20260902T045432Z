@@ -52,7 +52,7 @@ U = "internal/cli/usage.go"
 D = "internal/app/dispatch.go"
 A = "internal/app/app.go"
 # No constant for test/conformance/harness_unix_test.go, and no mutation edits
-# it. That file is a safety net over Snapshot -- a bounded call, a recording
+# it directly. That file is a safety net over Snapshot -- a bounded call, a recording
 # reporter, a timeout arm -- and a net is only observable when the thing it
 # catches misbehaves, so it is exercised by injecting into Snapshot rather than
 # into itself. "the FIFO guard is removed" drives its bound and timeout arm end
@@ -61,6 +61,7 @@ A = "internal/app/app.go"
 # It stays in FILES anyway, so an entry that does edit it later is backed up.
 P = "internal/cli/parse.go"
 V = "internal/version/version.go"
+G = "test/conformance/argv_test.go"
 
 # SURVIVES marks an entry that must NOT break the gate. Most entries are
 # defects the suite has to catch; these are the opposite -- correct code that a
@@ -250,6 +251,22 @@ MUTATIONS = [
    "\tread := map[string]bool{}",
    '\troot = filepath.Join(root, "internal")\n\tread := map[string]bool{}')],
    "so the cache key does not track the program"),
+
+ # The suite compiles on the host on every run, and the host is unix, so a case
+ # in the untagged half reaching into the unix-tagged half was invisible to the
+ # whole gate until a contributor on another GOOS met it. That is what the
+ # second GOOS in the vet target is for, and this is what proves it fires. The
+ # host vet this battery runs first passes, exactly as the gate's first vet
+ # did; the kill comes from the cross-GOOS one.
+ ("an untagged case reaches into the unix-only harness", [repl(G,
+   '\tlink := world.Path("link")',
+   '\t_ = snapshotBound\n\tlink := world.Path("link")')],
+   "undefined: snapshotBound"),
+
+ ("the forced-stamp GOFLAGS drops what go env carries", [repl(H,
+   '\treturn strings.TrimSpace(strings.TrimSpace(string(reported)) + " -buildvcs=true"), nil',
+   '\t_ = reported\n\treturn "-buildvcs=true", nil')],
+   "dropped -mod=mod from `go env GOFLAGS`"),
 
  ("the version banner gains a suffix", [repl(V,
    'return "Mackup " + String()', 'return "Mackup " + String() + "-extra"')],

@@ -92,15 +92,30 @@ conformance:
 
 # Tagged, so the conformance package is vetted too rather than skipped along
 # with the rest of the default build.
+#
+# And vetted for a second GOOS, which is not gold-plating: harness_unix_test.go
+# is behind `conformance && unix` because it makes a FIFO, and a case in the
+# untagged argv_test.go was written calling a helper that lived there. The
+# package stopped compiling on every non-unix GOOS and this gate could not see
+# it, because `go vet` without GOOS vets the host and the host is unix. A
+# Windows contributor running this same target would have met an
+# undefined-symbol error instead of a suite that simply does not apply.
+#
+# windows is the cheapest GOOS that excludes the `unix` constraint -- plan9
+# would do as well but has no plan9/arm64 pair, so it is not portable as a
+# fixed choice. Vetting, not building: this only has to answer "does the
+# untagged half of the package still compile without the unix half", and it
+# does that without a toolchain for that platform.
 vet:
 	go vet -tags conformance ./...
+	GOOS=windows go vet -tags conformance ./...
 
 # Same file list as the check target's gofmt step, and for the same reason --
 # see the comment there. It is spelled out twice rather than shared through a
 # variable so that each target keeps its own guard on find's exit status; the
 # thing to avoid is one of them drifting, so change both.
 fmt:
-	@files="$$(find . -name .git -prune -o -name testdata -prune -o -name '*.go' -print)" || { echo "make: find failed" >&2; exit 1; }; \
+	@files="$$(find . \( -name .git -o -name vendor -o -name testdata -o -path ./bin \) -prune -o -name '*.go' -print)" || { echo "make: find failed" >&2; exit 1; }; \
 		test -n "$$files" || { echo "make: found no Go files to format" >&2; exit 1; }; \
 		gofmt -l -w $$files
 
@@ -139,7 +154,14 @@ fmt:
 # The whole module is searched rather than ./cmd ./internal ./test, for the
 # reason TestEveryDocCommentNamesWhatItDocuments now walks the module root: a
 # renamed directory failed loudly, but a NEW top-level package silently escaped
-# the formatting gate. .git is pruned because it is history, not source.
+# the formatting gate.
+#
+# The prune list matters more here than in that walk, because `make fmt` shares
+# it and fmt REWRITES what it finds. .git is history. bin is the Makefile's own
+# build output. vendor is third-party source carrying no gofmt guarantee: left
+# in, the first `go mod vendor` turns this gate permanently red over code the
+# project does not own, and `make fmt` rewrites those dependencies in place --
+# which is a good deal worse than a red gate. Both walks agree on the list.
 #
 # testdata is excluded, for the reason `go build` excludes it: nothing under it
 # is part of the build, so it is where a package keeps fixtures that are
@@ -156,7 +178,7 @@ fmt:
 # reads STDIN, so a find that matched nothing would hang the gate rather than
 # fail it. Verified.
 check: vet test
-	@files="$$(find . -name .git -prune -o -name testdata -prune -o -name '*.go' -print)" || { echo "make: find failed" >&2; exit 1; }; \
+	@files="$$(find . \( -name .git -o -name vendor -o -name testdata -o -path ./bin \) -prune -o -name '*.go' -print)" || { echo "make: find failed" >&2; exit 1; }; \
 		test -n "$$files" || { echo "make: found no Go files to format-check" >&2; exit 1; }; \
 		unformatted="$$(gofmt -l $$files)" || { echo "make: gofmt failed" >&2; exit 1; }; \
 		test -z "$$unformatted" || { echo "gofmt needed:"; printf '%s\n' "$$unformatted"; exit 1; }

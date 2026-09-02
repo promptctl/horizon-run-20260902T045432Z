@@ -354,6 +354,26 @@ func readImplementationSources() {
 	}
 }
 
+// snapshotPaths lists what a snapshot holds, in a stable order, for a failure
+// message that is worth reading.
+//
+// Here rather than in harness_unix_test.go, where it was written. That file is
+// behind `conformance && unix` because it makes a FIFO; this helper has
+// nothing unix about it, and a case in the untagged argv_test.go calling it
+// stopped the package compiling on any other GOOS -- `GOOS=windows go vet
+// -tags conformance ./test/conformance/` reported it undefined, which is what
+// a Windows contributor running this repo's own `make check` would have seen.
+// A build constraint that is load-bearing for one file is not a place to keep
+// shared helpers.
+func snapshotPaths(snapshot Snapshot) []string {
+	paths := make([]string, 0, len(snapshot))
+	for path := range snapshot {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
 // buildDirPrefix names this suite's build directories, so that a later run can
 // recognize one an earlier run abandoned.
 const buildDirPrefix = "macklebox-conformance-bin-"
@@ -550,35 +570,62 @@ func environWithoutMakeflags() []string {
 	return kept
 }
 
-// environAppending returns env with value appended to name's existing setting,
-// space-separated, or with name set to value when it was unset.
+// goflagsForcingVCSStamp is the GOFLAGS a build must carry to stamp VCS
+// provenance: the value `go env GOFLAGS` reports, with -buildvcs=true appended.
 //
-// Appending rather than replacing, for GOFLAGS specifically. A developer's
-// GOFLAGS may carry settings this build still needs -- "-mod=mod" is the
-// ordinary one -- and replacing it outright would make the forced-stamp binary
-// the only one in the suite built without them. If that broke the build, the
-// case would skip, or fatal under CI, with a message naming VCS stamping for a
-// cause that had nothing to do with it.
+// Merged rather than replaced, for a developer's sake. Their GOFLAGS may carry
+// settings this build still needs -- "-mod=mod" is the ordinary one -- and
+// replacing it outright would make the forced-stamp binary the only one in the
+// suite built without them. If that broke the build, the case would skip, or
+// fatal under CI, with a message naming VCS stamping for a cause that had
+// nothing to do with it.
+//
+// Read from `go env` and not from the environment, which is the whole point
+// and was got wrong once. The previous version scanned os.Environ() and
+// appended to a GOFLAGS entry found there. GOFLAGS is more often set with
+// `go env -w`, which writes the file at `go env GOENV` and never appears in
+// the environment at all -- it is set that way on the machine this was written
+// on -- so that version found nothing to append to, set a fresh GOFLAGS, and
+// an environment GOFLAGS replaces the file's value WHOLESALE rather than
+// merging with it. The protection the paragraph above promises did not exist
+// in the common case. Verified both halves: `go env GOFLAGS` here reports
+// -buildvcs=false with no GOFLAGS in the environment, and with GOENV pointed
+// at a file holding "-buildvcs=false -mod=mod", running with
+// GOFLAGS=-buildvcs=true makes `go env GOFLAGS` report just -buildvcs=true.
 //
 // Appending is an override at all only because a later duplicate wins, which
 // is a claim about cmd/go and so was run rather than recalled: on go1.25.7,
 // GOFLAGS="-buildvcs=false -buildvcs=true" produces a stamped binary and the
 // reverse order an unstamped one.
-func environAppending(env []string, name, value string) []string {
+//
+// TestTheForcedStampGOFLAGSKeepsWhatGoEnvAlreadyCarries pins it, because a
+// merge that silently dropped everything would look exactly like this one on a
+// machine whose GOFLAGS holds only -buildvcs=false.
+func goflagsForcingVCSStamp(env []string) (string, error) {
+	command := exec.Command("go", "env", "GOFLAGS")
+	command.Env = env
+	reported, err := command.Output()
+	if err != nil {
+		return "", fmt.Errorf("reading GOFLAGS from go env: %v", err)
+	}
+	return strings.TrimSpace(strings.TrimSpace(string(reported)) + " -buildvcs=true"), nil
+}
+
+// environWith returns env with name set to value, replacing any existing
+// setting rather than adding a second one.
+//
+// A plain replacement is right here now that the merging happens in
+// goflagsForcingVCSStamp, against the effective value rather than against
+// whatever half of it the environment happens to hold.
+func environWith(env []string, name, value string) []string {
 	out := make([]string, 0, len(env)+1)
-	extended := false
 	for _, entry := range env {
-		if existing, current, _ := strings.Cut(entry, "="); existing == name {
-			out = append(out, name+"="+strings.TrimSpace(current+" "+value))
-			extended = true
+		if existing, _, _ := strings.Cut(entry, "="); existing == name {
 			continue
 		}
 		out = append(out, entry)
 	}
-	if !extended {
-		out = append(out, name+"="+value)
-	}
-	return out
+	return append(out, name+"="+value)
 }
 
 // buildStampedForcingVCSStamp builds a release binary through the Makefile
@@ -592,7 +639,12 @@ func environAppending(env []string, name, value string) []string {
 // vcs.revision at once, which is the only state in which the precedence rule
 // has anything to decide.
 func buildStampedForcingVCSStamp(out, version string) error {
-	env := environAppending(environWithoutMakeflags(), "GOFLAGS", "-buildvcs=true")
+	base := environWithoutMakeflags()
+	goflags, err := goflagsForcingVCSStamp(base)
+	if err != nil {
+		return err
+	}
+	env := environWith(base, "GOFLAGS", goflags)
 	if err := buildWithMakeEnv(out, version, env); err != nil {
 		return err
 	}
