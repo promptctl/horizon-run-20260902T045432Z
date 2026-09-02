@@ -74,6 +74,13 @@ func String() string {
 // from the shape of Main.Version: the same source tree yields "(devel)" on one
 // machine and a pseudo-version on another.
 func fromBuildInfo(bi *debug.BuildInfo) string {
+	// debug.ReadBuildInfo never returns (nil, true), but readBuildInfo is a
+	// seam and a test supplying nil means "this build carries no build info",
+	// which is a case worth writing and owed the fallback token rather than a
+	// panic.
+	if bi == nil {
+		return ""
+	}
 	for _, setting := range bi.Settings {
 		if setting.Key == "vcs.revision" {
 			return ""

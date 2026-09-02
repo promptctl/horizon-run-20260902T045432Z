@@ -688,6 +688,18 @@ func (r Result) ExpectStderr(want string) Result {
 	return r
 }
 
+// ExpectEitherStream asserts the text reached the user, without saying which
+// stream carried it. For the cases where appspec/02 requires the program to
+// show something and does not say where -- pinning a stream there would fail a
+// conforming implementation over a promise the spec declines to make.
+func (r Result) ExpectEitherStream(want string) Result {
+	r.t.Helper()
+	if !strings.Contains(r.Stdout, want) && !strings.Contains(r.Stderr, want) {
+		r.t.Errorf("%s: neither stream contains %q\nstdout: %q\nstderr: %q", r.invocation(), want, r.Stdout, r.Stderr)
+	}
+	return r
+}
+
 // ExpectStderrLine asserts stderr is exactly one line, equal to want. Used for
 // the literal contract tokens of appspec/07.
 func (r Result) ExpectStderrLine(want string) Result {

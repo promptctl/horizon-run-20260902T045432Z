@@ -64,7 +64,12 @@ vet:
 fmt:
 	gofmt -l -w ./cmd ./internal ./test
 
-check: vet test
+# build is here because nothing else exercises it. The conformance suite builds
+# through this Makefile but always passes BINARY=<tmpdir>/..., so the default
+# output path -- the one every human and every release uses -- is never taken
+# by any check. That is not hypothetical: 6ac9abc on this branch fixed exactly
+# that, a release build the rig had broken while the whole gate stayed green.
+check: vet build test
 	@test -z "$$(gofmt -l ./cmd ./internal ./test)" || { echo "gofmt needed:"; gofmt -l ./cmd ./internal ./test; exit 1; }
 
 clean:

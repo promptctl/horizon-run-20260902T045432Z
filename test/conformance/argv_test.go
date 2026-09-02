@@ -171,12 +171,23 @@ func TestUnrecognizedSubcommandWarnsThenPrintsUsageOnStderr(t *testing.T) {
 }
 
 func TestABareInvocationShowsUsage(t *testing.T) {
-	// appspec/02 "Argument-parser behavior": the parser treats a bare
-	// invocation as a usage display, observed exit 0.
+	// appspec/02 "Argument-parser behavior" makes one promise about a bare
+	// invocation and withholds two. The promise: "A reimplementation should
+	// print the usage block to the user." Withheld: the stream, which it never
+	// names here -- only --help/--version are pinned to stdout, and usage
+	// *errors* to stderr -- and the exit code, of which it says in as many
+	// words that "matching the exact exit code here is not load-bearing for
+	// callers".
+	//
+	// So this asserts the promise and nothing else. Routing this block to
+	// stderr, or exiting 1, breaks no contract and must not fail here. That
+	// this implementation prints to stdout and exits 0 is its own choice, and
+	// is pinned where a choice belongs: internal/app's own
+	// TestBareInvocationShowsUsage.
 	world := NewWorld(t)
 	before := world.Snapshot()
 
-	world.Run().ExpectExit(0).ExpectStdout(usageMarker)
+	world.Run().ExpectEitherStream(usageMarker)
 
 	world.ExpectUnchanged(before)
 }

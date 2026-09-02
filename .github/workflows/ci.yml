@@ -35,6 +35,7 @@ jobs:
           # rather than an absent one.
           cache: false
 
-      # vet, the unit tests, the black-box conformance suite, and the gofmt
-      # check -- the same single gate a developer runs locally.
+      # vet, the default build, the unit tests, the black-box conformance
+      # suite, and the gofmt check -- the same single gate a developer runs
+      # locally.
       - run: make check
