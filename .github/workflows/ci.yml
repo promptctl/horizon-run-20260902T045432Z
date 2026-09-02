@@ -11,10 +11,23 @@ on:
 permissions:
   contents: read
 
-# A superseded commit's run is not worth paying for, but never cancel a run on
-# master: that one is the record of whether the branch is green.
+# A superseded commit's run is not worth paying for, but every commit on master
+# must keep its own result: that run is the record of whether the branch is
+# green at that commit.
+#
+# cancel-in-progress: false alone does not give that, which is what this said
+# first. GitHub's concurrency rule is that "any existing pending job or workflow
+# in the same concurrency group will be canceled and the new queued job or
+# workflow will take its place" -- pending, not in progress, so the flag does
+# not reach it. Three commits landing on master inside a few minutes would
+# leave the middle one with no CI result at all: run 1 in progress, run 2
+# pending, run 3 arrives and takes run 2's place. Sharing a group also
+# serialises master runs behind each other for no benefit.
+#
+# So master commits do not share a group. Every other ref keeps one group per
+# ref, where superseding is the point.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.ref == 'refs/heads/master' && github.sha || '' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:

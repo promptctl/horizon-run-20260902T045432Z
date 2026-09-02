@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -522,17 +523,19 @@ func TestAssertionsOnAResultSurviveACapturedRegion(t *testing.T) {
 
 func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 	// Go's convention -- a doc comment opens with the name it documents -- is
-	// worth enforcing here for a specific reason rather than as style. Twice
-	// on this branch a declaration was inserted between a doc comment and the
-	// thing it described, silently reassigning the comment: the reporter
-	// interface took World's, and ExpectFailureExit took ExpectStdout's, so
-	// godoc told a reader that ExpectFailureExit asserts on stdout. Nothing
-	// failed either time; a comment describing the wrong code is exactly the
-	// defect this branch has spent its review rounds removing, and it is the
-	// one shape of it a machine can catch.
+	// worth enforcing here for a specific reason rather than as style. Three
+	// times on this branch a declaration was slid between a doc comment and
+	// the thing it described, silently reassigning the comment: the reporter
+	// interface took World's, ExpectFailureExit took ExpectStdout's, and a
+	// var block took the whole explanation of readImplementationSources, so
+	// godoc attributed the cache-key mechanism to two path constants. Nothing
+	// failed any of the three times.
 	//
-	// Declarations with no doc at all are not the subject and are skipped:
-	// the recorder's one-line Helper and Errorf do not want a paragraph.
+	// The first version of this case caught two of them and was reported as
+	// having found every live violation. It had not: it looked only at
+	// functions and single-specification type declarations, so the var block
+	// -- the third instance, already in the tree when the case was written --
+	// was invisible to it. Both halves below exist because of that.
 	root, err := moduleRoot()
 	if err != nil {
 		t.Fatalf("locating the module root: %v", err)
@@ -548,18 +551,43 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 			if err != nil {
 				return fmt.Errorf("parsing %s: %v", path, err)
 			}
+			relative, _ := filepath.Rel(root, path)
+			declared := declaredNames(file)
+
 			for _, declaration := range file.Decls {
-				name, doc := declaredNameAndDoc(declaration)
-				if doc == nil {
+				names, doc := declaredNamesAndDoc(declaration)
+				if doc == nil || len(names) == 0 {
+					continue
+				}
+				words := strings.Fields(doc.Text())
+				if len(words) == 0 {
 					continue
 				}
 				checked++
-				words := strings.Fields(doc.Text())
-				if len(words) == 0 || words[0] == name {
+				opening := words[0]
+
+				// One name: the convention applies in full, and the tree
+				// follows it everywhere.
+				if len(names) == 1 {
+					if opening != names[0] {
+						t.Errorf("%s: the doc comment on %s opens with %q; either it belongs to something else and a declaration was inserted under it, or it does not follow the convention the rest of the tree does", relative, names[0], opening)
+					}
 					continue
 				}
-				relative, _ := filepath.Rel(root, path)
-				t.Errorf("%s: the doc comment on %s opens with %q; either it belongs to something else and a declaration was inserted under it, or it does not follow the convention the rest of the tree does", relative, name, words[0])
+
+				// A grouped block is allowed a collective comment that opens
+				// with no name at all -- "Exit codes, per the exit-code table
+				// of appspec/02" over ExitOK and ExitFailure is right, and
+				// demanding a name there would be noise. What it may not do
+				// is open with the name of something declared elsewhere in
+				// the file, which is what a comment that has lost its
+				// declaration looks like.
+				if slices.Contains(names, opening) {
+					continue
+				}
+				if owner, ok := declared[opening]; ok {
+					t.Errorf("%s: the doc comment on the block declaring %v opens with %q, which is the name of the %s declared elsewhere in this file; a declaration was inserted between that comment and what it documents", relative, names, opening, owner)
+				}
 			}
 			return nil
 		})
@@ -575,21 +603,56 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 	}
 }
 
-// declaredNameAndDoc returns the name a declaration introduces and the doc
-// comment attached to it. Only functions and single-specification type
-// declarations have a name a doc comment is expected to open with; everything
-// else, a grouped const block above all, reports no name and is skipped.
-func declaredNameAndDoc(declaration ast.Decl) (string, *ast.CommentGroup) {
+// declaredNames maps every name a file declares at package scope to the kind
+// of thing it is, so a doc comment opening with one of them can be recognised
+// as belonging to that declaration rather than to the one it sits on.
+func declaredNames(file *ast.File) map[string]string {
+	names := map[string]string{}
+	for _, declaration := range file.Decls {
+		switch d := declaration.(type) {
+		case *ast.FuncDecl:
+			names[d.Name.Name] = "function"
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				switch sp := spec.(type) {
+				case *ast.TypeSpec:
+					names[sp.Name.Name] = "type"
+				case *ast.ValueSpec:
+					for _, name := range sp.Names {
+						names[name.Name] = d.Tok.String()
+					}
+				}
+			}
+		}
+	}
+	return names
+}
+
+// declaredNamesAndDoc returns the names a declaration introduces and the doc
+// comment attached to it. Imports are skipped: they declare no name a comment
+// would be expected to open with.
+func declaredNamesAndDoc(declaration ast.Decl) ([]string, *ast.CommentGroup) {
 	switch d := declaration.(type) {
 	case *ast.FuncDecl:
-		return d.Name.Name, d.Doc
+		return []string{d.Name.Name}, d.Doc
 	case *ast.GenDecl:
-		if d.Tok != token.TYPE || len(d.Specs) != 1 {
-			return "", nil
+		if d.Tok == token.IMPORT {
+			return nil, nil
 		}
-		return d.Specs[0].(*ast.TypeSpec).Name.Name, d.Doc
+		names := []string{}
+		for _, spec := range d.Specs {
+			switch sp := spec.(type) {
+			case *ast.TypeSpec:
+				names = append(names, sp.Name.Name)
+			case *ast.ValueSpec:
+				for _, name := range sp.Names {
+					names = append(names, name.Name)
+				}
+			}
+		}
+		return names, d.Doc
 	}
-	return "", nil
+	return nil, nil
 }
 
 func TestExpectUnchangedReportsEveryShapeOfChange(t *testing.T) {

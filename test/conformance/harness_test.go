@@ -164,6 +164,15 @@ func TestMain(m *testing.M) {
 // only the first needs to do.
 var readSourcesOnce sync.Once
 
+// mainSourceAnchor and internalPrefix name the program's own source, which the
+// walk must reach for the cache key to track it. Naming them means a rename
+// that moves the program stops the suite loudly, on its next run, rather than
+// leaving it passing over code it no longer covers.
+var (
+	mainSourceAnchor = filepath.Join("cmd", "mackup", "main.go")
+	internalPrefix   = "internal" + string(filepath.Separator)
+)
+
 // readImplementationSources reads every file the build could read, for its
 // side effect on the Go test cache.
 //
@@ -213,15 +222,6 @@ var readSourcesOnce sync.Once
 // moment later and say so properly. Reading *nothing* is different, and
 // panics: that is the silent-degradation shape this mechanism keeps failing
 // in, and it looks exactly like success.
-// mainSourceAnchor and internalPrefix name the program's own source, which the
-// walk must reach for the cache key to track it. Naming them means a rename
-// that moves the program stops the suite loudly, on its next run, rather than
-// leaving it passing over code it no longer covers.
-var (
-	mainSourceAnchor = filepath.Join("cmd", "mackup", "main.go")
-	internalPrefix   = "internal" + string(filepath.Separator)
-)
-
 func readImplementationSources() {
 	// flag.Parse runs at the top of m.Run and the testlog opens just after, so
 	// unparsed flags mean this is running somewhere its reads go nowhere.
