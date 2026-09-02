@@ -550,18 +550,35 @@ func environWithoutMakeflags() []string {
 	return kept
 }
 
-// environWith returns env with name set to value, replacing an existing
-// setting rather than adding a second one. Written out rather than appended,
-// so nothing here depends on how duplicate entries are resolved.
-func environWith(env []string, name, value string) []string {
+// environAppending returns env with value appended to name's existing setting,
+// space-separated, or with name set to value when it was unset.
+//
+// Appending rather than replacing, for GOFLAGS specifically. A developer's
+// GOFLAGS may carry settings this build still needs -- "-mod=mod" is the
+// ordinary one -- and replacing it outright would make the forced-stamp binary
+// the only one in the suite built without them. If that broke the build, the
+// case would skip, or fatal under CI, with a message naming VCS stamping for a
+// cause that had nothing to do with it.
+//
+// Appending is an override at all only because a later duplicate wins, which
+// is a claim about cmd/go and so was run rather than recalled: on go1.25.7,
+// GOFLAGS="-buildvcs=false -buildvcs=true" produces a stamped binary and the
+// reverse order an unstamped one.
+func environAppending(env []string, name, value string) []string {
 	out := make([]string, 0, len(env)+1)
+	extended := false
 	for _, entry := range env {
-		if existing, _, _ := strings.Cut(entry, "="); existing == name {
+		if existing, current, _ := strings.Cut(entry, "="); existing == name {
+			out = append(out, name+"="+strings.TrimSpace(current+" "+value))
+			extended = true
 			continue
 		}
 		out = append(out, entry)
 	}
-	return append(out, name+"="+value)
+	if !extended {
+		out = append(out, name+"="+value)
+	}
+	return out
 }
 
 // buildStampedForcingVCSStamp builds a release binary through the Makefile
@@ -575,7 +592,7 @@ func environWith(env []string, name, value string) []string {
 // vcs.revision at once, which is the only state in which the precedence rule
 // has anything to decide.
 func buildStampedForcingVCSStamp(out, version string) error {
-	env := environWith(environWithoutMakeflags(), "GOFLAGS", "-buildvcs=true")
+	env := environAppending(environWithoutMakeflags(), "GOFLAGS", "-buildvcs=true")
 	if err := buildWithMakeEnv(out, version, env); err != nil {
 		return err
 	}
@@ -753,6 +770,9 @@ func (w *World) UseBinary(path string) { w.bin = path }
 func (w *World) UseStampedBinary() { w.bin = mackupStampedBin }
 
 // Setenv sets an environment variable for every command this world runs.
+// TestAVariableTheWorldSetsReachesTheProgram pins it: until that case existed
+// nothing called this, and an untested seam in the harness is worth no more
+// than an untested guard.
 func (w *World) Setenv(name, value string) { w.env[name] = value }
 
 // Path resolves a home-relative path. appspec/00 promise 7 makes the
@@ -778,16 +798,6 @@ func (w *World) WriteFile(relative, content string, perm fs.FileMode) string {
 	}
 	if err := os.WriteFile(path, []byte(content), perm); err != nil {
 		w.t.Fatalf("writing %s: %v", relative, err)
-	}
-	return path
-}
-
-// Mkdir creates a home-relative directory.
-func (w *World) Mkdir(relative string) string {
-	w.t.Helper()
-	path := w.Path(relative)
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		w.t.Fatalf("creating %s: %v", relative, err)
 	}
 	return path
 }

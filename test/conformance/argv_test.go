@@ -482,6 +482,31 @@ func TestTheHarnessIsolatesTheProgramFromTheDeveloperEnvironment(t *testing.T) {
 	}
 }
 
+func TestAVariableTheWorldSetsReachesTheProgram(t *testing.T) {
+	// World.Setenv is how a case points the program at a config file or an XDG
+	// directory of its own (macklebox-resolvers-5iw.2 is the first that will).
+	// Nothing called it, so nothing checked that what it sets actually
+	// arrives, and the isolation case next door cannot: that one asserts
+	// variables are ABSENT from the program's environment, which a Setenv
+	// dropping its value on the floor satisfies perfectly.
+	//
+	// Observed on the environment the process was launched with, for the
+	// reason that case gives: a value re-derived from the world would read
+	// correctly even if nothing reached the program.
+	world := NewWorld(t)
+	want := world.Path("elsewhere.cfg")
+	world.Setenv("MACKUP_CONFIG", want)
+
+	environment := map[string]string{}
+	for _, entry := range world.Run("--help").ExpectExit(0).Env {
+		name, value, _ := strings.Cut(entry, "=")
+		environment[name] = value
+	}
+	if got := environment["MACKUP_CONFIG"]; got != want {
+		t.Errorf("MACKUP_CONFIG in the program's environment = %q, want %q", got, want)
+	}
+}
+
 func TestTheSnapshotWatchesTheWholeScratchRoot(t *testing.T) {
 	// A "changed nothing" assertion is only as wide as what the snapshot
 	// walks. appspec/04's file_system engine takes an arbitrary path, so the

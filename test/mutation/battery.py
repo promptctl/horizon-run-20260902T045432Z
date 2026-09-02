@@ -32,10 +32,15 @@ one, and restores in a finally, so an interrupt or an exception puts the
 sources back rather than leaving a mutation in the tree.
 """
 
-import os, shutil, subprocess, sys, tempfile
+import atexit, os, shutil, subprocess, sys, tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BACKUP = tempfile.mkdtemp(prefix="macklebox-mutation-backup-")
+# Registered here rather than at the end of the happy path: the dirty-tree
+# refusal below exits before the run starts, and an exception can leave through
+# the middle, and both used to leak a directory holding copies of every tracked
+# source file. Ten aborted runs left ten of them.
+atexit.register(lambda: shutil.rmtree(BACKUP, ignore_errors=True))
 FILES = ["test/conformance/harness_test.go", "test/conformance/argv_test.go",
          "test/conformance/harness_unix_test.go",
          "internal/cli/usage.go", "internal/app/dispatch.go", "internal/app/app.go",
@@ -225,6 +230,15 @@ def apply(edits):
         touched.add(f)
     return touched, None
 
+# apply() writes to whatever path a mutation names, but only paths in FILES are
+# copied at startup and put back afterwards -- so a mutation naming a file
+# outside that list stays in the working tree for good, while the run still
+# prints "tree restored". Nothing tied the two together, so tie them here.
+untracked = sorted({edit[1] for entry in MUTATIONS for edit in entry[1]} - set(FILES))
+if untracked:
+    sys.exit("battery: these mutations edit files that are not in FILES, so they "
+             "would be neither backed up nor restored: " + ", ".join(untracked))
+
 # A dirty tree cannot be told apart from a run this script corrupted, and
 # restore() would overwrite uncommitted work with the startup copy. Refuse.
 dirty = subprocess.run(["git", "status", "--porcelain"], cwd=REPO,
@@ -288,12 +302,15 @@ finally:
   # internal/cli/usage.go for someone to find later.
   restore()
 
-rc, out = run("make check")
-print("\n=== tree restored, make check exit=%d ===" % rc, flush=True)
+restored_rc, _ = run("make check")
+print("\n=== tree restored, make check exit=%d ===" % restored_rc, flush=True)
+if restored_rc != 0:
+    print("BATTERY LEFT THE TREE BROKEN: restore did not put every mutation back", flush=True)
 print("\n=== SUMMARY: %d run ===" % len(results), flush=True)
 bad = [r for r in results if r[1] not in ("killed", "survives")]
 for r in results:
     print("  %-16s %s" % (r[1], r[0]), flush=True)
 print("\nNOT KILLED: %d" % len(bad), flush=True)
-shutil.rmtree(BACKUP, ignore_errors=True)
-sys.exit(1 if bad else 0)
+# The restore check is part of the verdict. Printing it and exiting 0 anyway
+# let a wrapper record a clean run over a tree this script had broken.
+sys.exit(1 if (bad or restored_rc != 0) else 0)
