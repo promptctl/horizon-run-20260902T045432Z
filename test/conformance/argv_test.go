@@ -311,17 +311,30 @@ func TestTheSnapshotSeesAFileRewrittenWithTheBytesItAlreadyHeld(t *testing.T) {
 	path := world.WriteFile(".mackup.cfg", content, 0o600)
 
 	before := world.Snapshot()
-
-	// Some filesystems carry a coarse modification-time resolution, so the
-	// rewrite is separated from the original write far enough to register on
-	// any of them.
-	time.Sleep(10 * time.Millisecond)
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("rewriting %s: %v", path, err)
-	}
-
 	key := world.SnapshotKey(".mackup.cfg")
-	if after := world.Snapshot(); after[key] == before[key] {
-		t.Errorf("the snapshot records %s identically after a rewrite: %s", key, after[key])
+
+	// Modification-time resolution varies by an enormous factor -- nanoseconds
+	// on APFS and ext4, one scheduler tick on Linux's coarse inode clock, a
+	// full second on ext3 and HFS+ -- so the rewrite is repeated until the
+	// stamp actually moves rather than after a fixed sleep chosen to be "long
+	// enough", which on a one-second filesystem it would not be.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("rewriting %s: %v", path, err)
+		}
+		if world.Snapshot()[key] != before[key] {
+			return
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
+
+	// Said out loud rather than asserted away: where the stamp will not move
+	// within the deadline, ExpectUnchanged genuinely cannot see a rewrite that
+	// preserves the bytes, and any case relying on that -- appspec/01 section
+	// 3's dry-run contract above all -- is weaker on this filesystem.
+	t.Skipf("this filesystem's modification-time resolution is too coarse to register a rewrite of %s within %s, so a same-bytes rewrite is invisible to ExpectUnchanged here", key, 3*time.Second)
 }

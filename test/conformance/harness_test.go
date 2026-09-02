@@ -53,17 +53,35 @@ var (
 	mackupBin        string
 	mackupVCSBin     string
 	mackupStampedBin string
+
+	// Why mackupVCSBin is empty, when it is.
+	mackupVCSBuildErr error
 )
 
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "macklebox-conformance-bin-")
-	if err != nil {
+	// A fixed directory rather than a fresh one per run, because it has to be
+	// findable by a later run: os.Exit does not run deferred functions, and a
+	// panicking test never returns from m.Run() at all -- the testing package
+	// re-panics on the test's own goroutine, which cannot be recovered from
+	// here -- so a crashed run always leaves its binaries behind. Clearing the
+	// directory on the way in bounds that at one run's worth of megabytes
+	// rather than one run's worth per crash.
+	//
+	// The cost is that two suites running against the same TMPDIR at the same
+	// time would clobber each other's binaries. Go runs one instance of a
+	// package's tests at a time, so that takes two concurrent `go test`
+	// invocations by hand, and is the better trade against an unbounded leak.
+	dir := filepath.Join(os.TempDir(), "macklebox-conformance-bin")
+	if err := os.RemoveAll(dir); err != nil {
 		fmt.Fprintf(os.Stderr, "conformance: %v\n", err)
 		os.Exit(1)
 	}
-	// os.Exit does not run deferred functions, so the removal is spelled out
-	// at every exit below rather than deferred; otherwise each run leaks
-	// several megabytes of binaries into the temporary directory.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "conformance: %v\n", err)
+		os.Exit(1)
+	}
+	// The removal below is spelled out at each exit rather than deferred,
+	// since os.Exit skips defers.
 	fail := func(err error) {
 		fmt.Fprintf(os.Stderr, "conformance: %v\n", err)
 		os.RemoveAll(dir)
@@ -95,6 +113,13 @@ func TestMain(m *testing.M) {
 	vcsBin := filepath.Join(dir, "mackup-vcs")
 	if err := buildForcingVCSStamp(vcsBin); err == nil {
 		mackupVCSBin = vcsBin
+	} else {
+		// Kept, not discarded: "this toolchain cannot stamp" is only one of
+		// the reasons this build fails. git absent, git refusing a repository
+		// it considers dubiously owned, a GOFLAGS setting that breaks this
+		// invocation alone -- each would otherwise be reported as the wrong
+		// cause, with nothing to diagnose from.
+		mackupVCSBuildErr = err
 	}
 
 	code := m.Run()
@@ -110,7 +135,7 @@ func requireVCSStampedBuild(t *testing.T) string {
 	if mackupVCSBin != "" {
 		return mackupVCSBin
 	}
-	const why = "this toolchain cannot stamp VCS information into a build (-buildvcs=true failed), so the pseudo-version half of the provenance contract cannot be exercised here"
+	why := fmt.Sprintf("no VCS-stamped build is available, so the pseudo-version half of the provenance contract cannot be exercised here: %v", mackupVCSBuildErr)
 	if os.Getenv("CI") != "" {
 		t.Fatal(why)
 	}
@@ -127,17 +152,37 @@ func buildWithMake(out, version string) error {
 		return err
 	}
 
-	args := []string{"build", "BINARY=" + out}
-	if version != "" {
-		args = append(args, "VERSION="+version)
-	}
-
-	cmd := exec.Command("make", args...)
+	// VERSION is always assigned, empty included. make exports every
+	// command-line variable through MAKEFLAGS, and that environment variable
+	// survives the go test process in between and is read back by this make --
+	// so `make check VERSION=0.1.0` would otherwise stamp the development
+	// binary too, and the case asserting the fallback token would fail on the
+	// project's own documented release command. An explicit assignment here
+	// outranks the inherited one.
+	cmd := exec.Command("make", "build", "BINARY="+out, "VERSION="+version)
 	cmd.Dir = root
+	// And MAKEFLAGS is dropped outright, so no other override on the outer
+	// command line reaches the binary under test either.
+	cmd.Env = environWithoutMakeflags()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("building %s with make: %v\n%s", out, err, output)
 	}
 	return nil
+}
+
+// environWithoutMakeflags is the current environment with make's own variable
+// channels removed.
+func environWithoutMakeflags() []string {
+	env := os.Environ()
+	kept := env[:0]
+	for _, entry := range env {
+		switch name, _, _ := strings.Cut(entry, "="); name {
+		case "MAKEFLAGS", "MFLAGS":
+		default:
+			kept = append(kept, entry)
+		}
+	}
+	return kept
 }
 
 // buildForcingVCSStamp builds with -buildvcs=true, which is an error rather
@@ -150,6 +195,7 @@ func buildForcingVCSStamp(out string) error {
 
 	cmd := exec.Command("go", "build", "-buildvcs=true", "-o", out, "./cmd/mackup")
 	cmd.Dir = root
+	cmd.Env = environWithoutMakeflags()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("building %s with VCS stamping forced on: %v\n%s", out, err, output)
 	}
