@@ -134,8 +134,8 @@ MUTATIONS = [
    'opens with "UseBinary", which is the name of the method declared elsewhere'),
 
  ("type doc orphaned onto a var block", [repl(H,
-   "// and mode, so a case can assert what a command did or did not change.\ntype Snapshot map[string]string",
-   "// and mode, so a case can assert what a command did or did not change.\nvar (\n\torphanedTypeDocA = 1\n\torphanedTypeDocB = 2\n)\n\ntype Snapshot map[string]string")],
+   "// the battery's \"Snapshot mtime dropped\" entry kills a record without it.\ntype Snapshot map[string]string",
+   "// the battery's \"Snapshot mtime dropped\" entry kills a record without it.\nvar (\n\torphanedTypeDocA = 1\n\torphanedTypeDocB = 2\n)\n\ntype Snapshot map[string]string")],
    'opens with "Snapshot", which is the name of the type declared elsewhere'),
 
  ("Snapshot failure surfaces as a failure, not a timeout", [repl(H,
@@ -185,6 +185,23 @@ MUTATIONS = [
  ("a one-name parenthesized block may carry a collective comment", [repl(H,
    "// buildDirPrefix names this suite's build directories, so that a later run can\n// recognize one an earlier run abandoned.\nconst buildDirPrefix = \"macklebox-conformance-bin-\"",
    "// Naming of this suite's build directories, so that a later run can\n// recognize one an earlier run abandoned.\nconst (\n\tbuildDirPrefix = \"macklebox-conformance-bin-\"\n)")],
+   SURVIVES),
+
+ # The doc guard holds a test entry point to a weaker rule than everything else
+ # -- it may open with any word the file does not declare -- because demanding
+ # the function's own name reddened the gate on idiomatic Go. These two pin
+ # both directions of that, because the obvious way to fix the false positive
+ # (exempt test functions, or skip _test.go) would have made the first one
+ # invisible, and all three defects the guard was written for were in a
+ # _test.go file.
+ ("doc stranded on an inserted test function", [repl(H,
+   "func moduleRoot() (string, error) {",
+   "func TestInserted(t *testing.T) {}\n\nfunc moduleRoot() (string, error) {")],
+   'the doc comment on the test TestInserted opens with "moduleRoot"'),
+
+ ("a test function may carry an ordinary explanatory comment", [repl(H,
+   "// moduleRoot is the directory holding go.mod, found by walking up from the",
+   "// Regression for the round-9 argv scan bug.\nfunc TestOrdinaryComment(t *testing.T) {}\n\n// moduleRoot is the directory holding go.mod, found by walking up from the")],
    SURVIVES),
 
  ("the version banner gains a suffix", [repl(V,
@@ -248,7 +265,19 @@ if dirty:
              "this rewrites sources in place and restores from a copy taken now:\n" + dirty)
 
 snapshot_tree()
+
+# A name that matches nothing used to run zero mutations and still print
+# "NOT KILLED: 0" and exit 0 -- a clean battery run that proved nothing, which
+# is the exact vacuous-pass shape the rest of this branch exists to remove. A
+# typo, or a wrapper naming a mutation that has since been renamed, got a green
+# light. Both halves are needed: the name check catches the typo, and the empty
+# check catches a MUTATIONS list that has been emptied or filtered to nothing.
 only = sys.argv[1:]
+known = {entry[0] for entry in MUTATIONS}
+unknown = [name for name in only if name not in known]
+if unknown:
+    sys.exit("battery: no mutation is named " + ", ".join(repr(u) for u in unknown) +
+             "\nknown mutations:\n  " + "\n  ".join(sorted(known)))
 results = []
 try:
   for entry in MUTATIONS:
@@ -307,10 +336,12 @@ print("\n=== tree restored, make check exit=%d ===" % restored_rc, flush=True)
 if restored_rc != 0:
     print("BATTERY LEFT THE TREE BROKEN: restore did not put every mutation back", flush=True)
 print("\n=== SUMMARY: %d run ===" % len(results), flush=True)
+if not results:
+    print("BATTERY RAN NOTHING: a run that exercises no mutation proves nothing", flush=True)
 bad = [r for r in results if r[1] not in ("killed", "survives")]
 for r in results:
     print("  %-16s %s" % (r[1], r[0]), flush=True)
 print("\nNOT KILLED: %d" % len(bad), flush=True)
 # The restore check is part of the verdict. Printing it and exiting 0 anyway
 # let a wrapper record a clean run over a tree this script had broken.
-sys.exit(1 if (bad or restored_rc != 0) else 0)
+sys.exit(1 if (bad or restored_rc != 0 or not results) else 0)

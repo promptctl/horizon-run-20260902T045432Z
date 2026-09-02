@@ -1008,8 +1008,17 @@ func (r Result) ExpectSilentStderr() Result {
 	return r
 }
 
-// Snapshot records every path under the world's scratch root with its content
-// and mode, so a case can assert what a command did or did not change.
+// Snapshot records every path under the world's scratch root -- its mode, its
+// modification time, and its content, or for a symlink its target -- so a case
+// can assert what a command did or did not change.
+//
+// The modification time is in that list because it is load-bearing, not
+// incidental: it is the only field that separates "left alone" from "rewritten
+// with the bytes it already held", which is the shape a copy takes when the
+// source and destination already agree, and so the field that makes the
+// dry-run "performed no copy" contract of appspec/01 section 3 checkable at
+// all. TestTheSnapshotSeesAFileRewrittenWithTheBytesItAlreadyHeld pins it, and
+// the battery's "Snapshot mtime dropped" entry kills a record without it.
 type Snapshot map[string]string
 
 // Snapshot captures the current state of the whole scratch root. The failure

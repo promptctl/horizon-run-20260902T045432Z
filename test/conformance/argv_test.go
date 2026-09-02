@@ -22,6 +22,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // The argv boundary of appspec/02-invocation.md, observed at the process
@@ -686,8 +688,36 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 	checked := 0
 	for _, dir := range []string{"cmd", "internal", "test"} {
 		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, entry fs.DirEntry, err error) error {
-			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") {
+			if err != nil {
 				return err
+			}
+			// testdata is skipped for the reason `go build` skips it: nothing
+			// under it is part of the build, so it is where a package grows
+			// fixtures that are deliberately not valid Go -- an ordinary thing
+			// for internal/cli, which is a parser, to want. Parsing one here
+			// fatals this case with a message about doc comments, naming a
+			// file no doc convention applies to.
+			//
+			// gofmt is the OTHER half of that, and skipping it only here would
+			// have fixed nothing: `gofmt -l ./cmd ./internal ./test` exits 2
+			// on the same file and the check target turns a non-zero gofmt
+			// into a failed gate, so the red would have moved from this case
+			// to that one. The Makefile excludes testdata too. Both are
+			// needed; neither is sufficient. Verified by putting the fixture
+			// in and running each half with the other half's fix reverted.
+			//
+			// What this does NOT skip, deliberately: directories whose names
+			// begin with "_" or ".", which `go build` also ignores. None
+			// exists under cmd, internal or test, and a tree that grows one
+			// gets a loud failure here rather than a silent gap.
+			if entry.IsDir() {
+				if entry.Name() == "testdata" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") {
+				return nil
 			}
 			file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments)
 			if err != nil {
@@ -712,9 +742,50 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 					// One name, written on its own: the convention applies in
 					// full, and the tree follows it everywhere.
 					if !documented.collective {
-						if opening != names[0] {
-							t.Errorf("%s: the doc comment on %s opens with %q; either it belongs to something else and a declaration was inserted under it, or it does not follow the convention the rest of the tree does", relative, names[0], opening)
+						if opening == names[0] {
+							continue
 						}
+						// A test entry point is held to the weaker rule the
+						// grouped branch below uses: it may open with
+						// anything that is not the name of another
+						// declaration in this file.
+						//
+						// Not a style concession. "// Issue 4104." above a
+						// TestXxx is how Go itself writes them: of the 1657
+						// test functions in go1.25.7's own standard library
+						// that carry a leading comment, 1193 do not open with
+						// the function's name. Counted with this same parser,
+						// not recalled. Holding those to the full convention
+						// reddens the gate on a contributor writing ordinary
+						// Go -- the same defect leadingArticles exists for,
+						// fixed the same way.
+						//
+						// What is deliberately NOT done, having been
+						// proposed: exempting test functions outright, or
+						// skipping _test.go files. Either blinds this case to
+						// the three defects that caused it to be written --
+						// all three were in harness_test.go, and an inserted
+						// `func TestInserted(t *testing.T) {}` strands a doc
+						// comment exactly as the inserted func did. Under the
+						// rule below that insertion is still caught, because
+						// the stranded comment opens with a name this file
+						// declares. The battery pins both directions.
+						//
+						// The gap this leaves, stated rather than glossed: a
+						// comment stranded on a test function that opens with
+						// a word the file does not declare reads as an
+						// ordinary non-conforming comment and passes. That is
+						// the limit the grouped branch already has -- declared
+						// is per-file -- and it is the silent half of a trade
+						// whose loud half was rejecting idiomatic Go on every
+						// contributor who wrote a test.
+						if isTestEntryPoint(relative, declaration) {
+							if owner, ok := declared[opening]; ok {
+								t.Errorf("%s: the doc comment on the test %s opens with %q, which is the name of the %s declared elsewhere in this file; a declaration was inserted between that comment and what it documents", relative, names[0], opening, owner)
+							}
+							continue
+						}
+						t.Errorf("%s: the doc comment on %s opens with %q; either it belongs to something else and a declaration was inserted under it, or it does not follow the convention the rest of the tree does", relative, names[0], opening)
 						continue
 					}
 
@@ -838,6 +909,34 @@ type documented struct {
 // Trailing punctuation is deliberately NOT accommodated: "// String() returns"
 // is not the convention, and a red gate on it is the right answer.
 var leadingArticles = map[string]bool{"A": true, "An": true, "The": true}
+
+// isTestEntryPoint reports whether a declaration is a test function the go
+// tool will run: TestXxx, BenchmarkXxx, FuzzXxx or ExampleXxx, at package
+// scope, in a _test.go file.
+//
+// The Xxx rule is the go tool's own -- the character after the prefix must not
+// be a lower-case letter -- so `Testing` and `Benchmarking` are ordinary
+// functions and stay under the full convention. A method is never one of
+// these, whatever it is named, so the receiver is checked rather than assumed
+// absent.
+func isTestEntryPoint(relative string, declaration ast.Decl) bool {
+	function, ok := declaration.(*ast.FuncDecl)
+	if !ok || function.Recv != nil || !strings.HasSuffix(relative, "_test.go") {
+		return false
+	}
+	for _, prefix := range []string{"Test", "Benchmark", "Fuzz", "Example"} {
+		rest, found := strings.CutPrefix(function.Name.Name, prefix)
+		if !found {
+			continue
+		}
+		if rest == "" {
+			return true
+		}
+		first, _ := utf8.DecodeRuneInString(rest)
+		return !unicode.IsLower(first)
+	}
+	return false
+}
 
 // openingName is the name a doc comment opens with, looking past an article.
 func openingName(words []string) string {

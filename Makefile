@@ -88,8 +88,14 @@ conformance:
 vet:
 	go vet -tags conformance ./...
 
+# Same file list as the check target's gofmt step, and for the same reason --
+# see the comment there. It is spelled out twice rather than shared through a
+# variable so that each target keeps its own guard on find's exit status; the
+# thing to avoid is one of them drifting, so change both.
 fmt:
-	gofmt -l -w ./cmd ./internal ./test
+	@files="$$(find ./cmd ./internal ./test -name testdata -prune -o -name '*.go' -print)" || { echo "make: find failed" >&2; exit 1; }; \
+		test -n "$$files" || { echo "make: found no Go files to format" >&2; exit 1; }; \
+		gofmt -l -w $$files
 
 # build is deliberately NOT a prerequisite here, and the reasoning it replaces
 # is recorded because it was wrong twice over.
@@ -122,8 +128,25 @@ fmt:
 # exits 2 with empty stdout and satisfied the guard. A later ticket renaming
 # one of these directories would have turned the formatting check off and left
 # the gate green.
+#
+# testdata is excluded, for the reason `go build` excludes it: nothing under it
+# is part of the build, so it is where a package keeps fixtures that are
+# deliberately not valid Go. `gofmt -l` does not skip testdata on its own --
+# it exits 2 on such a file with empty stdout, which the guard above turns into
+# a failed gate naming formatting for a file no formatting applies to.
+# TestEveryDocCommentNamesWhatItDocuments had the same hole and skipping it
+# only there would have moved the red rather than removed it; both exclusions
+# are needed and neither is sufficient. test/conformance/testdata holds the
+# fixture that keeps both exercised.
+#
+# The file list is checked for emptiness before it is used, and that guard is
+# load-bearing in a way the go list one is not: `gofmt -l` with no arguments
+# reads STDIN, so a find that matched nothing would hang the gate rather than
+# fail it. Verified.
 check: vet test
-	@unformatted="$$(gofmt -l ./cmd ./internal ./test)" || { echo "make: gofmt failed" >&2; exit 1; }; \
+	@files="$$(find ./cmd ./internal ./test -name testdata -prune -o -name '*.go' -print)" || { echo "make: find failed" >&2; exit 1; }; \
+		test -n "$$files" || { echo "make: found no Go files to format-check" >&2; exit 1; }; \
+		unformatted="$$(gofmt -l $$files)" || { echo "make: gofmt failed" >&2; exit 1; }; \
 		test -z "$$unformatted" || { echo "gofmt needed:"; printf '%s\n' "$$unformatted"; exit 1; }
 
 clean:
