@@ -184,7 +184,8 @@ vet:
 # which is why the explicit `|| { echo "make: gofmt failed"; exit 1; }` is
 # there and not here.
 fmt:
-	@$(GO_SOURCES) -print | grep -q . || { echo "make: found no Go files to format" >&2; exit 1; }; \
+	@$(GO_SOURCES) -print >/dev/null || { echo "make: cannot traverse the repository to list Go files; a directory under the root is unreadable" >&2; exit 1; }; \
+		$(GO_SOURCES) -print | grep -q . || { echo "make: found no Go files to format" >&2; exit 1; }; \
 		$(GO_SOURCES) -exec gofmt -l -w {} +
 
 # build is deliberately NOT a prerequisite here, and the reasoning it replaces
@@ -261,8 +262,25 @@ fmt:
 # load-bearing in a way the go list one is not: `gofmt -l` with no arguments
 # reads STDIN, so a find that matched nothing would hang the gate rather than
 # fail it. Verified.
+#
+# find's own traversal status is taken FIRST, on a run whose exit code nothing
+# swallows. It has to be its own invocation: `find | grep -q .` reports grep's
+# status, so a traversal failure was invisible there, and `find -exec gofmt +`
+# returns non-zero when EITHER find or gofmt failed, so it landed in the arm
+# below and reddened the gate with "make: gofmt failed" over a tree whose every
+# Go file was correctly formatted. Reproduced with a chmod 000 directory under
+# the root: rc=1, empty stdout, gofmt entirely innocent.
+#
+# It still fails, and that is a deliberate difference from the doc-comment
+# walk, which skips the same condition. That walk is one check among several
+# over files it can also reach other ways; this is the ONLY thing that checks
+# formatting, and it has no per-file backstop -- a traversal that stops early
+# leaves part of the tree unchecked and says nothing, which is the exact
+# failure every guard in this recipe exists to prevent. What was wrong was the
+# diagnosis, not the verdict, so the message now names the cause.
 check: vet test
-	@$(GO_SOURCES) -print | grep -q . || { echo "make: found no Go files to format-check" >&2; exit 1; }; \
+	@$(GO_SOURCES) -print >/dev/null || { echo "make: cannot traverse the repository to list Go files; a directory under the root is unreadable, so the formatting check would silently cover only part of the tree" >&2; exit 1; }; \
+		$(GO_SOURCES) -print | grep -q . || { echo "make: found no Go files to format-check" >&2; exit 1; }; \
 		unformatted="$$($(GO_SOURCES) -exec gofmt -l {} +)" || { echo "make: gofmt failed" >&2; exit 1; }; \
 		test -z "$$unformatted" || { echo "gofmt needed:"; printf '%s\n' "$$unformatted"; exit 1; }
 

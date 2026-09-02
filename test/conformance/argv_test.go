@@ -11,6 +11,7 @@
 package conformance
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -1144,6 +1145,30 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 			}
 			file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments)
 			if err != nil {
+				// A file this process cannot OPEN is skipped, exactly as a
+				// directory it cannot read is skipped forty lines up, and for
+				// the reason recorded there: propagating turned a permission
+				// error into "walking the module root: ... permission denied",
+				// reported by the doc-comment case, blaming this convention
+				// for something unrelated to it. That reasoning was written
+				// about the callback's err parameter, which only ever carries
+				// ReadDir failures on directories, and the identical condition
+				// on a FILE was left propagating -- the same fix landing one
+				// level over from where the shape lives. Reproduced with a
+				// chmod 000 .go file under the module root.
+				//
+				// The blind spot this widens is the one already accepted
+				// there, stated plainly: a doc comment inside a file this
+				// process cannot open is not checked. checked == 0 remains the
+				// backstop for a walk that reached nothing at all.
+				//
+				// A SYNTAX error stays fatal. That is a different condition
+				// and the distinction is the whole point: an unparseable file
+				// that is part of the build already breaks `go vet` and
+				// `gofmt -l`, so it is not this guard's to swallow.
+				if errors.Is(err, fs.ErrPermission) {
+					return nil
+				}
 				return fmt.Errorf("parsing %s: %v", path, err)
 			}
 			relative, _ := filepath.Rel(root, path)
@@ -1532,6 +1557,38 @@ func TestExpectUnchangedReportsEveryShapeOfChange(t *testing.T) {
 				t.Errorf("the rewritten file was reported by name (%q), so it is visible to the snapshot after all and the blindness report is answering nothing", message)
 			}
 		}
+	})
+
+	t.Run("an entry inside a directory that can be listed but not searched", func(t *testing.T) {
+		// The third permission shape, and the one Snapshot used to abort over
+		// rather than degrade. 0400 is r--: ReadDir lists the children, and
+		// the lstat behind DirEntry.Info() on each of them fails with EACCES,
+		// so the walk returned that error and the harness fataled with
+		// "snapshotting the scratch root", taking every remaining assertion in
+		// the case with it.
+		//
+		// Reaching the line after Snapshot is itself the assertion that it no
+		// longer fatals: Fatalf would end this subtest here.
+		//
+		// Unlike the 0300 case above, no rewrite is demonstrated, and that is
+		// a property of the mode rather than a gap: without the execute bit
+		// nobody can open the child at all, this process or the program under
+		// test. The defect was the abort; the blindness report is what makes
+		// the degraded record honest about what it no longer knows.
+		if os.Geteuid() == 0 {
+			t.Skip("root can stat inside a 0400 directory, so the branch under test is unreachable here")
+		}
+		world := NewWorld(t)
+		path := world.WriteFile(filepath.Join("sealed", "cfg"), original, 0o600)
+		if err := os.Chmod(filepath.Dir(path), 0o400); err != nil {
+			t.Fatalf("making the directory unsearchable: %v", err)
+		}
+		before := world.Snapshot()
+		if _, ok := before[world.SnapshotKey("sealed", "cfg")]; !ok {
+			t.Fatalf("the unstatable entry was dropped from the snapshot entirely, so its removal would not be caught either; snapshot holds %v", before)
+		}
+		expectReported(t, world.captureReport(t, func() { world.ExpectUnchanged(before) }),
+			world.SnapshotKey("sealed", "cfg"), "could not be examined at all")
 	})
 
 	t.Run("mode changed with the bytes and the stamp left alone", func(t *testing.T) {

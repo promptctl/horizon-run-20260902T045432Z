@@ -388,6 +388,22 @@ MUTATIONS = [
    '_ = path')],
    "no report names home/locked"),
 
+ # Snapshot's third permission shape: a 0400 parent, whose children ReadDir
+ # lists and lstat cannot touch. This branch did not exist -- the walk
+ # returned the error, WalkDir aborted, and the harness fataled -- so the
+ # mutation is the code as it was, and the kill is the case that shape now
+ # has. The two entries are separate because they fail differently: dropping
+ # the branch fatals the harness, dropping the report leaves it silent.
+ ("Snapshot aborts on an entry it cannot stat", [repl(H,
+   '\t\t\tif errors.Is(err, fs.ErrPermission) {\n\t\t\t\tsnapshot[relative] = entryUnstatable\n\t\t\t\treturn nil\n\t\t\t}\n\t\t\treturn err',
+   '\t\t\treturn err')],
+   "snapshotting the scratch root"),
+
+ ("the unstatable-entry blindness goes unreported", [repl(H,
+   '\t\t{entryUnstatable, "could not be examined at all -- its mode, type and modification time are all unknown -- so this assertion is blind to every change to it but its removal; make its parent directory searchable in the fixture"},\n',
+   '')],
+   "no report names home/sealed/cfg"),
+
  ("moduleRoot walks up from runtime.Caller", [
    repl(H, '\t"path/filepath"\n', '\t"path/filepath"\n\t"runtime"\n'),
    repl(H, '\tdir, err := os.Getwd()\n\tif err != nil {\n\t\treturn "", fmt.Errorf("locating the module root: %v", err)\n\t}',

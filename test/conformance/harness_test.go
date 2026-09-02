@@ -63,6 +63,12 @@ import (
 // blind. See there for what that does and does not cover.
 const contentsUnreadable = " <contents unreadable>"
 
+// entryUnstatable is the whole record of an entry this process could list but
+// could not stat: its mode, type and modification time are all unknown, so
+// nothing about it can be compared. ExpectUnchanged reports it for the same
+// reason it reports contentsUnreadable.
+const entryUnstatable = "<unstatable>"
+
 // stampedVersion is the version the stamped binary is built with. It is
 // deliberately not a plausible release number: a test asserting on it should
 // be obviously reading the build's stamp, not a hardcoded product version.
@@ -1207,6 +1213,27 @@ func (w *World) Snapshot() Snapshot {
 		}
 		info, err := entry.Info()
 		if err != nil {
+			// The third permission shape, and the only one this walk used to
+			// abort over. A directory at 0400 is readable but not searchable:
+			// ReadDir lists its children, and the lstat behind Info() on each
+			// of them fails with EACCES. Verified with a standalone WalkDir
+			// over a 0400 directory.
+			//
+			// Aborting there fataled the harness -- "snapshotting the scratch
+			// root: ... permission denied" -- and took every remaining
+			// assertion in the case with it, which is the exact outcome the
+			// two branches around this one were written to avoid, in the same
+			// words: "aborting here would replace the case's own assertion
+			// with a complaint about the harness". This one was left behind.
+			//
+			// Recorded rather than skipped, so the entry's existence is still
+			// compared: it appearing or vanishing is caught by the created and
+			// removed branches of ExpectUnchanged. What is lost is everything
+			// else about it, which is why the marker is reported there.
+			if errors.Is(err, fs.ErrPermission) {
+				snapshot[relative] = entryUnstatable
+				return nil
+			}
 			return err
 		}
 		// The modification time is part of the record. Without it a run that
@@ -1326,19 +1353,33 @@ func (w *World) ExpectUnchanged(before Snapshot) {
 	//
 	// The file half of the same situation needs none of this: an unreadable
 	// FILE still contributes its mode and stamp from the stat, so a rewrite of
-	// it remains visible. Only the directory branch is blind.
+	// it remains visible. It is the two branches that lose the stat which are
+	// blind -- the unlistable directory above, and the entry that could not be
+	// stat'd at all, which is what a 0400 (readable, not searchable) parent
+	// produces. The second is blind to more: nothing about the entry is known,
+	// so only its appearance or removal is still compared.
+	blindness := []struct{ marker, why string }{
+		{contentsUnreadable, "could not be listed, so this assertion is blind to a file rewritten in place inside it; make the fixture readable, or assert on what is in there directly"},
+		{entryUnstatable, "could not be examined at all -- its mode, type and modification time are all unknown -- so this assertion is blind to every change to it but its removal; make its parent directory searchable in the fixture"},
+	}
 	blind, seen := []string{}, map[string]bool{}
 	for _, snapshot := range []Snapshot{before, after} {
 		for path, record := range snapshot {
-			if strings.Contains(record, contentsUnreadable) && !seen[path] {
-				seen[path] = true
-				blind = append(blind, path)
+			if seen[path] {
+				continue
+			}
+			for _, shape := range blindness {
+				if strings.Contains(record, shape.marker) {
+					seen[path] = true
+					blind = append(blind, path+" "+shape.why)
+					break
+				}
 			}
 		}
 	}
 	sort.Strings(blind)
-	for _, path := range blind {
-		w.t.Errorf("%s could not be listed, so this assertion is blind to a file rewritten in place inside it; make the fixture readable, or assert on what is in there directly", path)
+	for _, message := range blind {
+		w.t.Errorf("%s", message)
 	}
 
 	for path, want := range before {
