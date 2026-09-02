@@ -43,6 +43,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -82,8 +83,16 @@ var (
 	mackupVCSBin     string
 	mackupStampedBin string
 
-	// Why mackupVCSBin is empty, when it is.
+	// mackupStampedVCSBin is a release build that ALSO carries a VCS stamp,
+	// so the precedence half of the provenance rule can be observed at the
+	// boundary. Empty when the toolchain cannot stamp.
+	mackupStampedVCSBin string
+
+	// mackupVCSBuildErr says why mackupVCSBin is empty, when it is.
 	mackupVCSBuildErr error
+
+	// mackupStampedVCSBuildErr says why mackupStampedVCSBin is empty.
+	mackupStampedVCSBuildErr error
 )
 
 func TestMain(m *testing.M) {
@@ -143,6 +152,25 @@ func TestMain(m *testing.M) {
 	// which would restore the vacuous pass under a different name:
 	// requireVCSStampedBuild reports the degradation, skipping locally and
 	// failing under CI.
+	// The release build's mirror of the same problem, and it went unnoticed
+	// far longer. mackupStampedBin is built with plain `make build`, so it
+	// inherits -buildvcs=auto -- and where the toolchain declines to stamp
+	// (GOFLAGS=-buildvcs=false, which is set on developer machines; a source
+	// tarball; a Docker COPY without .git) that release binary carries no
+	// vcs.revision at all. The rule that the linker stamp OUTRANKS a
+	// working-tree provenance then has no conflict to resolve, and the case
+	// asserting it passes for the trivial reason. Verified: inverting the
+	// precedence in internal/version, so every release build reports the
+	// fallback token, left this suite entirely green and was caught only by
+	// the unit test. This build is the release binary with the stamp forced
+	// on, which is the only shape where the two sources disagree.
+	stampedVCSBin := filepath.Join(dir, "mackup-stamped-vcs")
+	if err := buildStampedForcingVCSStamp(stampedVCSBin, stampedVersion); err == nil {
+		mackupStampedVCSBin = stampedVCSBin
+	} else {
+		mackupStampedVCSBuildErr = err
+	}
+
 	vcsBin := filepath.Join(dir, "mackup-vcs")
 	if err := buildForcingVCSStamp(vcsBin); err == nil {
 		mackupVCSBin = vcsBin
@@ -189,9 +217,19 @@ var (
 // cached pass over a mutated program: the reads happened, and nothing was
 // listening. Hence sync.Once from NewWorld, which every case goes through.
 //
-// The residual gap is a -run filter that selects no case, since then nothing
-// reads anything; such a run also asserts nothing, so there is no pass to be
-// stale. Moving this call back out of a case is the failure that matters, and
+// The residual gap is a run that never reaches NewWorld, which is this walk's
+// only caller. A -run filter selecting no case is the obvious shape, and it
+// asserts nothing either, so there is no pass to go stale. The less obvious
+// shape is a filter selecting only cases that build no world:
+// TestTheReaperJudgesTheEntryItRemoves and
+// TestTheReaperFindsDirectoriesUnderAPathHoldingAGlobMetacharacter are both
+// like that today, and running either alone leaves this walk unexecuted --
+// verified, against the earlier claim here that a no-case filter was the whole
+// of it. Neither is a stale-pass hazard, because neither observes the program:
+// they exercise this package's own code, which cmd/go already folds into the
+// test binary's build ID. What WOULD be one is a case that observes the
+// program without going through NewWorld. There is none; do not write one.
+// Moving this call back out of a case is the failure that matters, and
 // the flag.Parsed check below is a tripwire for exactly that: flags are still
 // unparsed before m.Run, so a caller that runs too early to be recorded
 // panics instead of quietly buying back the stale pass.
@@ -349,10 +387,23 @@ func keepBuildDirFresh(dir string) {
 	go func() {
 		for {
 			time.Sleep(buildDirTouchInterval)
-			now := time.Now()
-			os.Chtimes(dir, now, now)
+			touchBuildDir(dir)
 		}
 	}()
+}
+
+// touchBuildDir marks dir as still in use by moving its modification time to
+// now.
+//
+// Split out of keepBuildDirFresh's loop so a case can call it. The loop sleeps
+// for minutes at a time and cannot be driven from a test, so with the Chtimes
+// call inlined there this half of the reaper contract had nothing pinning it:
+// replacing it with `_ = now` left the whole suite green. The reaper's other
+// half, that it judges the entry it removes, has had a case since it was
+// written. TestARefreshedBuildDirectoryOutlivesTheReaper is this one's.
+func touchBuildDir(dir string) {
+	now := time.Now()
+	os.Chtimes(dir, now, now)
 }
 
 // reapAbandonedBuildDirectories removes build directories left behind by runs
@@ -433,10 +484,34 @@ func requireVCSStampedBuild(t *testing.T) string {
 	return ""
 }
 
+// requireStampedVCSBuild returns the release binary that also carries a VCS
+// stamp. When it is missing this escalates exactly as requireVCSStampedBuild
+// does, and for the same reasons -- read that comment before changing this one.
+func requireStampedVCSBuild(t *testing.T) string {
+	t.Helper()
+	if mackupStampedVCSBin != "" {
+		return mackupStampedVCSBin
+	}
+	why := fmt.Sprintf("no VCS-stamped release build is available, so the rule that a linker stamp outranks working-tree provenance cannot be exercised here: %v", mackupStampedVCSBuildErr)
+	switch os.Getenv("CI") {
+	case "", "false", "0":
+	default:
+		t.Fatal(why)
+	}
+	t.Skip(why)
+	return ""
+}
+
 // buildWithMake builds through the Makefile, so the suite exercises the same
 // build the project ships rather than a second one written beside it. version
 // is empty for a development build.
 func buildWithMake(out, version string) error {
+	return buildWithMakeEnv(out, version, environWithoutMakeflags())
+}
+
+// buildWithMakeEnv is buildWithMake with the child environment given
+// explicitly, so a caller can force a toolchain setting for one build.
+func buildWithMakeEnv(out, version string, env []string) error {
 	root, err := moduleRoot()
 	if err != nil {
 		return err
@@ -453,7 +528,7 @@ func buildWithMake(out, version string) error {
 	cmd.Dir = root
 	// And MAKEFLAGS is dropped outright, so no other override on the outer
 	// command line reaches the binary under test either.
-	cmd.Env = environWithoutMakeflags()
+	cmd.Env = env
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("building %s with make: %v\n%s", out, err, output)
 	}
@@ -473,6 +548,54 @@ func environWithoutMakeflags() []string {
 		}
 	}
 	return kept
+}
+
+// environWith returns env with name set to value, replacing an existing
+// setting rather than adding a second one. Written out rather than appended,
+// so nothing here depends on how duplicate entries are resolved.
+func environWith(env []string, name, value string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if existing, _, _ := strings.Cut(entry, "="); existing == name {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, name+"="+value)
+}
+
+// buildStampedForcingVCSStamp builds a release binary through the Makefile
+// with VCS stamping forced on, and returns an error unless it came out
+// stamped.
+//
+// Through the Makefile, because the -X symbol path lives there and this has to
+// be a real release build. With GOFLAGS overridden, because -buildvcs=auto is
+// what leaves the release binary unstamped on the machines where this matters.
+// Both halves are needed for one binary to carry a linker stamp and a
+// vcs.revision at once, which is the only state in which the precedence rule
+// has anything to decide.
+func buildStampedForcingVCSStamp(out, version string) error {
+	env := environWith(environWithoutMakeflags(), "GOFLAGS", "-buildvcs=true")
+	if err := buildWithMakeEnv(out, version, env); err != nil {
+		return err
+	}
+	return requireVCSRevision(out)
+}
+
+// requireVCSRevision reports whether the artifact at out carries the VCS
+// stamp, since -buildvcs=true is a request the toolchain may decline in
+// silence. buildForcingVCSStamp says why the exit status cannot answer this.
+func requireVCSRevision(out string) error {
+	info, err := buildinfo.ReadFile(out)
+	if err != nil {
+		return fmt.Errorf("reading the build info of %s: %v", out, err)
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "vcs.revision" {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s built with -buildvcs=true but carries no vcs.revision setting, so the toolchain stamped nothing and the build cannot exercise the provenance rule", out)
 }
 
 // buildForcingVCSStamp builds with -buildvcs=true and returns an error unless
@@ -506,16 +629,7 @@ func buildForcingVCSStamp(out string) error {
 		return fmt.Errorf("building %s with VCS stamping forced on: %v\n%s", out, err, output)
 	}
 
-	info, err := buildinfo.ReadFile(out)
-	if err != nil {
-		return fmt.Errorf("reading the build info of %s: %v", out, err)
-	}
-	for _, setting := range info.Settings {
-		if setting.Key == "vcs.revision" {
-			return nil
-		}
-	}
-	return fmt.Errorf("%s built with -buildvcs=true but carries no vcs.revision setting, so the toolchain stamped nothing and the build cannot exercise the provenance rule", out)
+	return requireVCSRevision(out)
 }
 
 // moduleRoot is the directory holding go.mod, found by walking up from the
@@ -806,6 +920,28 @@ func (r Result) ExpectStderrLine(want string) Result {
 	r.w.t.Helper()
 	if r.Stderr != want+"\n" {
 		r.w.t.Errorf("%s stderr = %q, want exactly %q", r.invocation(), r.Stderr, want+"\n")
+	}
+	return r
+}
+
+// versionLine is the whole of stdout for a --version run: the banner,
+// one line, nothing after it.
+var versionLine = regexp.MustCompile(`^Mackup \S+\n$`)
+
+// ExpectVersionLine asserts stdout is exactly the "Mackup <version>" line
+// appspec/00-overview.md "Provenance" names, and nothing else.
+//
+// It exists because the obvious spelling is vacuous. Three cases asserted
+// ExpectStdout("Mackup "), and the usage block opens with "Mackup - Keep your
+// application settings in sync." -- which contains that substring, so every
+// one of them was satisfied by the help text. A program answering `mackup
+// --version list` with the whole usage block passed the entire suite.
+// Observed, by making it do exactly that. The anchored match is what makes
+// these cases able to fail for the reason they claim.
+func (r Result) ExpectVersionLine() Result {
+	r.w.t.Helper()
+	if !versionLine.MatchString(r.Stdout) {
+		r.w.t.Errorf("%s stdout = %q, want exactly one \"Mackup <version>\" line", r.invocation(), r.Stdout)
 	}
 	return r
 }

@@ -18,7 +18,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -53,10 +52,7 @@ func TestVersionPrintsTheMackupLineToStdoutAndExitsZero(t *testing.T) {
 	world := NewWorld(t)
 	before := world.Snapshot()
 
-	result := world.Run("--version").ExpectExit(0).ExpectSilentStderr()
-	if !regexp.MustCompile(`^Mackup \S+\n$`).MatchString(result.Stdout) {
-		t.Errorf("stdout = %q, want a single \"Mackup <version>\" line", result.Stdout)
-	}
+	world.Run("--version").ExpectExit(0).ExpectSilentStderr().ExpectVersionLine()
 	world.ExpectUnchanged(before)
 }
 
@@ -98,6 +94,70 @@ func TestVersionReportsItsOwnVersionWhenTheBuildCarriesOne(t *testing.T) {
 		ExpectStdout("Mackup " + stampedVersion)
 }
 
+func TestAReleaseBuildOutranksTheProvenanceOfItsCheckout(t *testing.T) {
+	// The precedence half of appspec/00 "Provenance", which no case reached.
+	//
+	// internal/version resolves the linker stamp before it looks at build
+	// info, so a release binary reports its own version even though it was
+	// built from a checkout and carries that checkout's vcs.revision. Every
+	// other version case observes a binary where only one of the two sources
+	// is present, and the release binary the suite already had is built with
+	// -buildvcs=auto -- unstamped wherever the toolchain declines, which
+	// includes any machine with GOFLAGS=-buildvcs=false. With no vcs.revision
+	// there is no conflict, so inverting the precedence in internal/version
+	// left this whole suite green and only the unit test failed. Observed.
+	//
+	// This binary carries both at once, which is the only state where the rule
+	// decides anything.
+	world := NewWorld(t)
+	world.UseBinary(requireStampedVCSBuild(t))
+	world.Run("--version").
+		ExpectExit(0).
+		ExpectStdout("Mackup " + stampedVersion).
+		ExpectSilentStderr()
+}
+
+func TestARefreshedBuildDirectoryOutlivesTheReaper(t *testing.T) {
+	// The other half of the reaper contract. A running suite refreshes its own
+	// build directory's modification time, because the mtime is otherwise set
+	// once -- when the binaries are built -- so "untouched for an hour" would
+	// mean "started over an hour ago", and the next run to start would delete
+	// a long run's binaries out from under it. That surfaces as an exec
+	// failure in whatever case happened to be running, which names neither
+	// cause nor culprit.
+	//
+	// Nothing pinned it: replacing the Chtimes call with `_ = now` left the
+	// whole suite green. The reaper's other half, that it judges the entry it
+	// removes, has had a case since it was written.
+	//
+	// Both directions are asserted in one case on purpose. A reaper that
+	// simply never reaps also leaves a refreshed directory standing, so the
+	// stale one is what makes the survival mean something.
+	within := t.TempDir()
+	stale := filepath.Join(within, buildDirPrefix+"stale")
+	refreshed := filepath.Join(within, buildDirPrefix+"refreshed")
+	for _, dir := range []string{stale, refreshed} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("creating %s: %v", dir, err)
+		}
+		// Well past the threshold, so both are reapable before the refresh.
+		aged := time.Now().Add(-2 * buildDirAbandonedAfter)
+		if err := os.Chtimes(dir, aged, aged); err != nil {
+			t.Fatalf("ageing %s: %v", dir, err)
+		}
+	}
+
+	touchBuildDir(refreshed)
+	reapAbandonedBuildDirectories(within)
+
+	if _, err := os.Stat(refreshed); err != nil {
+		t.Errorf("the refreshed build directory was reaped (%v); a suite running longer than %s would have had its binaries deleted mid-run", err, buildDirAbandonedAfter)
+	}
+	if _, err := os.Stat(stale); err == nil {
+		t.Error("the stale build directory survived, so this case cannot show that the refresh is what saved the other one")
+	}
+}
+
 func TestConflictingForceFlagsEmitTheLiteralLineAndExitOne(t *testing.T) {
 	// appspec/07 "Error behavior summary" names this line as one of the three
 	// literal tokens that are contract, matched by scripts and tests.
@@ -133,13 +193,25 @@ func TestHelpAndVersionOutrankEverythingElseOnTheCommandLine(t *testing.T) {
 
 	NewWorld(t).Run("--version", "list").
 		ExpectExit(0).
-		ExpectStdout("Mackup ").
+		ExpectVersionLine().
 		ExpectSilentStderr()
 }
 
 func TestHelpAndVersionStopTheArgvScanWhereTheyAreFound(t *testing.T) {
-	NewWorld(t).Run("--help", "--nope").ExpectExit(0).ExpectStdout(usageMarker)
-	NewWorld(t).Run("--version", "-z").ExpectExit(0).ExpectStdout("Mackup ")
+	// Both assert a silent stderr, which is the half that says the scan
+	// stopped. Without it a parser that walks all of argv, warns about the
+	// later token on stderr and then honors the --help or --version it also
+	// saw passes both -- verified by emitting "mackup: unrecognized option:
+	// --nope" on this path and watching the suite stay green. The sibling case
+	// above asserts it on the same shape of argv; these two did not.
+	NewWorld(t).Run("--help", "--nope").
+		ExpectExit(0).
+		ExpectStdout(usageMarker).
+		ExpectSilentStderr()
+	NewWorld(t).Run("--version", "-z").
+		ExpectExit(0).
+		ExpectVersionLine().
+		ExpectSilentStderr()
 
 	// An option that genuinely came first is still rejected, and the --help
 	// behind it is not honored -- which is what the silent stdout says, since
@@ -180,9 +252,12 @@ func TestUnrecognizedSubcommandWarnsThenPrintsUsageOnStderr(t *testing.T) {
 	// Non-zero rather than 1, for the reason
 	// TestFormsMatchingNoUsageLineAreUsageErrors spells out over this very
 	// argv: it runs {"frobnicate"} too and asserts only that the run failed.
-	// appspec/02 says of the parser's exit code that "matching the exact exit
-	// code here is not load-bearing for callers", and appspec/07's error table
-	// does not list usage errors among the conditions it gives exit 1. So a
+	// appspec/07's error table does not list usage errors among the conditions
+	// it gives exit 1, and appspec/02 records no exit code for this form at
+	// all. (It says "matching the exact exit code here is not load-bearing for
+	// callers" of the ONE parser code it does record, the bare invocation's --
+	// citing that line as a general disclaimer, as this comment first did,
+	// overstates it. The conclusion rests on appspec/07.) So a
 	// reimplementation answering the conventional 2 passed there and failed
 	// here, on identical input -- the rule was applied to the table and not to
 	// the case standing beside it. That this implementation answers 1 is
@@ -597,38 +672,40 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 			declared := declaredNames(file)
 
 			for _, declaration := range file.Decls {
-				names, doc := declaredNamesAndDoc(declaration)
-				if doc == nil || len(names) == 0 {
-					continue
-				}
-				words := strings.Fields(doc.Text())
-				if len(words) == 0 {
-					continue
-				}
-				checked++
-				opening := words[0]
-
-				// One name: the convention applies in full, and the tree
-				// follows it everywhere.
-				if len(names) == 1 {
-					if opening != names[0] {
-						t.Errorf("%s: the doc comment on %s opens with %q; either it belongs to something else and a declaration was inserted under it, or it does not follow the convention the rest of the tree does", relative, names[0], opening)
+				for _, documented := range documentedDeclarations(declaration) {
+					names, doc := documented.names, documented.doc
+					if doc == nil || len(names) == 0 {
+						continue
 					}
-					continue
-				}
+					words := strings.Fields(doc.Text())
+					if len(words) == 0 {
+						continue
+					}
+					checked++
+					opening := words[0]
 
-				// A grouped block is allowed a collective comment that opens
-				// with no name at all -- "Exit codes, per the exit-code table
-				// of appspec/02" over ExitOK and ExitFailure is right, and
-				// demanding a name there would be noise. What it may not do
-				// is open with the name of something declared elsewhere in
-				// the file, which is what a comment that has lost its
-				// declaration looks like.
-				if slices.Contains(names, opening) {
-					continue
-				}
-				if owner, ok := declared[opening]; ok {
-					t.Errorf("%s: the doc comment on the block declaring %v opens with %q, which is the name of the %s declared elsewhere in this file; a declaration was inserted between that comment and what it documents", relative, names, opening, owner)
+					// One name: the convention applies in full, and the tree
+					// follows it everywhere.
+					if len(names) == 1 {
+						if opening != names[0] {
+							t.Errorf("%s: the doc comment on %s opens with %q; either it belongs to something else and a declaration was inserted under it, or it does not follow the convention the rest of the tree does", relative, names[0], opening)
+						}
+						continue
+					}
+
+					// A grouped block is allowed a collective comment that opens
+					// with no name at all -- "Exit codes, per the exit-code table
+					// of appspec/02" over ExitOK and ExitFailure is right, and
+					// demanding a name there would be noise. What it may not do
+					// is open with the name of something declared elsewhere in
+					// the file, which is what a comment that has lost its
+					// declaration looks like.
+					if slices.Contains(names, opening) {
+						continue
+					}
+					if owner, ok := declared[opening]; ok {
+						t.Errorf("%s: the doc comment on the block declaring %v opens with %q, which is the name of the %s declared elsewhere in this file; a declaration was inserted between that comment and what it documents", relative, names, opening, owner)
+					}
 				}
 			}
 			return nil
@@ -697,29 +774,65 @@ func declaredNames(file *ast.File) map[string]string {
 	return names
 }
 
-// declaredNamesAndDoc returns the names a declaration introduces and the doc
-// comment attached to it. Imports are skipped: they declare no name a comment
-// would be expected to open with.
-func declaredNamesAndDoc(declaration ast.Decl) ([]string, *ast.CommentGroup) {
+// documented pairs a doc comment with the names it is attached to.
+type documented struct {
+	names []string
+	doc   *ast.CommentGroup
+}
+
+// documentedDeclarations returns every doc comment a declaration carries,
+// with the names each one is attached to. Imports are skipped: they declare no
+// name a comment would be expected to open with.
+//
+// A grouped var or const block carries doc comments at TWO levels -- the
+// block's own, and one on each specification inside it -- and returning only
+// the block's left the inner ones unchecked. The tree already had one, on
+// mackupVCSBuildErr inside the binaries block, so an insertion under it was
+// invisible to this case: verified by sliding a declaration in there and
+// watching the suite stay green.
+//
+// That is the third blind spot found in this guard. The first version saw only
+// funcs and single-spec types; the second added grouped blocks but not the
+// specs inside them. When adding to it, say what it still cannot see rather
+// than reporting that it now sees everything -- that claim has been wrong
+// twice.
+func documentedDeclarations(declaration ast.Decl) []documented {
 	switch d := declaration.(type) {
 	case *ast.FuncDecl:
-		return []string{d.Name.Name}, d.Doc
+		return []documented{{names: []string{d.Name.Name}, doc: d.Doc}}
 	case *ast.GenDecl:
 		if d.Tok == token.IMPORT {
-			return nil, nil
+			return nil
 		}
+		found := []documented{}
 		names := []string{}
 		for _, spec := range d.Specs {
-			switch sp := spec.(type) {
-			case *ast.TypeSpec:
-				names = append(names, sp.Name.Name)
-			case *ast.ValueSpec:
-				for _, name := range sp.Names {
-					names = append(names, name.Name)
-				}
+			specNames, specDoc := specNamesAndDoc(spec)
+			names = append(names, specNames...)
+			// A spec's own comment documents exactly that spec, so it is held
+			// to the single-name convention even inside a block, where the
+			// collective comment is not.
+			if specDoc != nil && len(specNames) > 0 {
+				found = append(found, documented{names: specNames, doc: specDoc})
 			}
 		}
-		return names, d.Doc
+		return append(found, documented{names: names, doc: d.Doc})
+	}
+	return nil
+}
+
+// specNamesAndDoc returns the names one specification introduces and the doc
+// comment written directly above it, inside its block.
+func specNamesAndDoc(spec ast.Spec) ([]string, *ast.CommentGroup) {
+	switch sp := spec.(type) {
+	case *ast.TypeSpec:
+		return []string{sp.Name.Name}, sp.Doc
+	case *ast.ValueSpec:
+		names := []string{}
+		for _, name := range sp.Names {
+			names = append(names, name.Name)
+		}
+		return names, sp.Doc
 	}
 	return nil, nil
 }
@@ -767,6 +880,28 @@ func TestExpectUnchangedReportsEveryShapeOfChange(t *testing.T) {
 		}
 		expectReported(t, world.captureReport(t, func() { world.ExpectUnchanged(before) }),
 			world.SnapshotKey(".mackup.cfg"), "was removed")
+	})
+
+	t.Run("mode changed with the bytes and the stamp left alone", func(t *testing.T) {
+		// The shape that pins the mode field. chmod moves ctime, which
+		// Snapshot does not record, and leaves both the bytes and the
+		// modification time exactly where they were -- so the mode is the only
+		// field that differs, and with it dropped from the record this
+		// assertion passes over a file whose permissions changed. Verified:
+		// rewriting the file record without the mode left the suite green.
+		//
+		// Not a hypothetical field to lose. Once link install lands
+		// (macklebox-link-sync-83q.2), a dry-run or a rejected run that chmods
+		// ~/.ssh/config from 0600 to 0644 is exactly what every "touched
+		// nothing" promise in this suite exists to catch.
+		world := NewWorld(t)
+		path := world.WriteFile(".mackup.cfg", original, 0o600)
+		before := world.Snapshot()
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatalf("changing the mode of %s: %v", path, err)
+		}
+		expectReported(t, world.captureReport(t, func() { world.ExpectUnchanged(before) }),
+			world.SnapshotKey(".mackup.cfg"), "changed")
 	})
 
 	t.Run("content replaced at the same size and the same modification time", func(t *testing.T) {
