@@ -2,6 +2,8 @@ package app
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"regexp"
 	"strings"
 	"testing"
@@ -149,5 +151,41 @@ func TestSubcommandsReachDispatch(t *testing.T) {
 		if got.stdout != "" {
 			t.Errorf("mackup %s stdout = %q, want empty", argv, got.stdout)
 		}
+	}
+}
+
+// failingWriter fails every write, the way a write to a full disk does.
+type failingWriter struct{ err error }
+
+func (w failingWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestUndeliveredOutputIsNotReportedAsSuccess(t *testing.T) {
+	// Go raises SIGPIPE for a closed pipe on fd 1/2, but a redirect to a full
+	// disk just fails the write. A run whose output never reached the user has
+	// not completed the requested action and must not exit 0.
+	for _, argv := range [][]string{{"--help"}, {"--version"}, {}} {
+		var errOut bytes.Buffer
+		streams := &ui.IO{
+			In:  strings.NewReader(""),
+			Out: failingWriter{errors.New("no space left on device")},
+			Err: &errOut,
+		}
+		if code := Main(argv, streams); code != ExitFailure {
+			t.Errorf("mackup %s with a failing stdout = %d, want %d", argv, code, ExitFailure)
+		}
+		if !strings.Contains(errOut.String(), "no space left on device") {
+			t.Errorf("mackup %s stderr = %q, want the write failure named", argv, errOut.String())
+		}
+	}
+}
+
+func TestAFailedWriteDoesNotMaskAnExistingFailureCode(t *testing.T) {
+	streams := &ui.IO{
+		In:  strings.NewReader(""),
+		Out: io.Discard,
+		Err: failingWriter{errors.New("stderr is gone")},
+	}
+	if code := Main([]string{"--force", "--force-no", "backup"}, streams); code != ExitFailure {
+		t.Errorf("exit = %d, want %d", code, ExitFailure)
 	}
 }

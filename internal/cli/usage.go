@@ -35,4 +35,5 @@ Modes of operation:
   link              Symlink files already in the Mackup folder into your home.
   link uninstall    Replace the symlinks mackup created with real files again.
 
-<application> is an application key as shown by "mackup list", e.g. vim or git.`
+<application> is an application key as shown by "mackup list", e.g. vim or git.
+Options may be given before or after the subcommand.`

@@ -27,6 +27,20 @@ const ForceConflictMessage = "Options --force and --force-no are mutually exclus
 // Main runs one invocation and returns the process exit code. argv excludes the
 // program name.
 func Main(argv []string, streams *ui.IO) int {
+	code := runArgv(argv, streams)
+
+	// A run whose output never reached the user is not a completed action, so
+	// it cannot report one. Only the closed-pipe case on stdout/stderr is
+	// handled for us (Go raises SIGPIPE there); a redirect to a full disk is
+	// not, and would otherwise exit 0 with truncated output.
+	if err := streams.WriteError(); err != nil && code == ExitOK {
+		streams.Errf("Error: unable to write output: %s\n", err)
+		return ExitFailure
+	}
+	return code
+}
+
+func runArgv(argv []string, streams *ui.IO) int {
 	// Step 1: parse argv.
 	inv, err := cli.Parse(argv)
 	if err != nil {
