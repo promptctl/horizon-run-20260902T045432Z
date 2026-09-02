@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The argv boundary of appspec/02-invocation.md, observed at the process
@@ -46,13 +47,34 @@ func TestVersionPrintsTheMackupLineToStdoutAndExitsZero(t *testing.T) {
 func TestVersionReportsTheFallbackTokenForAnUninstalledBuild(t *testing.T) {
 	// appspec/00-overview.md "Provenance": the version is the package's own
 	// version when installed, and a stable fallback token otherwise. This is
-	// the program exactly as `make build` produces it.
+	// the program exactly as `make build` produces it -- the artifact a user
+	// gets, not one built beside it.
 	NewWorld(t).Run("--version").
 		ExpectExit(0).
 		ExpectStdout("Mackup unknown")
 }
 
+func TestVersionReportsTheFallbackTokenForAVCSStampedBuild(t *testing.T) {
+	// The harder half of the same rule, and the one that is easy to lose. A
+	// build from a working tree is an uninstalled tree, but since Go 1.24 the
+	// toolchain labels it with a pseudo-version derived from the commit rather
+	// than with "(devel)" -- so a program that trusted the module version
+	// would report a build identity here. Whether a build gets stamped at all
+	// depends on the machine, which is why this runs against a binary built
+	// with the stamp forced on.
+	world := NewWorld(t)
+	world.UseBinary(requireVCSStampedBuild(t))
+	world.Run("--version").
+		ExpectExit(0).
+		ExpectStdout("Mackup unknown")
+}
+
 func TestVersionReportsItsOwnVersionWhenTheBuildCarriesOne(t *testing.T) {
+	// A release build, made the way the project makes one: `make build
+	// VERSION=...`. That path is otherwise unexercised, and its -X symbol
+	// path is spelled out by hand -- the linker accepts a stale one without
+	// complaint and simply stamps nothing, so a release binary reporting
+	// "unknown" is a silent failure this is the only guard against.
 	world := NewWorld(t)
 	world.UseStampedBinary()
 	world.Run("--version").
@@ -231,10 +253,18 @@ func TestTheHarnessIsolatesTheProgramFromTheDeveloperEnvironment(t *testing.T) {
 		t.Errorf("the world's home is the real HOME %q", realHome)
 	}
 
+	// Observed on the environment the process was actually launched with, not
+	// on one the harness rebuilds to order: what makes the world isolating is
+	// a single assignment in RunWithInput, and deleting it hands the program
+	// the developer's own environment while leaving a re-derived value
+	// perfectly correct.
 	environment := map[string]string{}
-	for _, entry := range world.Environ() {
+	for _, entry := range world.Run("--help").ExpectExit(0).Env {
 		name, value, _ := strings.Cut(entry, "=")
 		environment[name] = value
+	}
+	if len(environment) == 0 {
+		t.Fatal("the program was launched with no environment of its own, so it inherited the developer's")
 	}
 	if environment["HOME"] != world.Home {
 		t.Errorf("HOME in the program's environment = %q, want the world's home %q", environment["HOME"], world.Home)
@@ -267,5 +297,31 @@ func TestTheSnapshotWatchesTheWholeScratchRoot(t *testing.T) {
 	}
 	if _, ok := world.Snapshot()[outside]; !ok {
 		t.Errorf("the snapshot is blind to %s, created outside home", outside)
+	}
+}
+
+func TestTheSnapshotSeesAFileRewrittenWithTheBytesItAlreadyHeld(t *testing.T) {
+	// appspec/01 section 3's dry-run contract is "perform no copy/move/delete/
+	// symlink", not "leave the same bytes". A copy that ran when it should not
+	// have, onto a destination that already matched, is precisely the
+	// regression ExpectUnchanged exists to catch -- and it is invisible to a
+	// snapshot that records only content and mode.
+	world := NewWorld(t)
+	const content = "[storage]\nengine = file_system\n"
+	path := world.WriteFile(".mackup.cfg", content, 0o600)
+
+	before := world.Snapshot()
+
+	// Some filesystems carry a coarse modification-time resolution, so the
+	// rewrite is separated from the original write far enough to register on
+	// any of them.
+	time.Sleep(10 * time.Millisecond)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("rewriting %s: %v", path, err)
+	}
+
+	key := world.SnapshotKey(".mackup.cfg")
+	if after := world.Snapshot(); after[key] == before[key] {
+		t.Errorf("the snapshot records %s identically after a rewrite: %s", key, after[key])
 	}
 }

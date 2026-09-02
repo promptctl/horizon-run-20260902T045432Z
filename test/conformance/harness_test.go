@@ -36,12 +36,22 @@ const stampedVersion = "0.0.0-conformance"
 // means "the program did the thing" must assert the thing, never this.
 const usageMarker = "Usage:"
 
-// The two binaries under test. appspec/00-overview.md "Provenance" makes both
-// halves of the version contract observable, so the suite builds both: the
-// program as `make build` produces it (no version stamped, so it reports the
-// fallback token) and as an installed build behaves (its own version stamped).
+// The binaries under test. appspec/00-overview.md "Provenance" makes the
+// version contract observable in three shapes, and each needs its own build:
+//
+//   - mackupBin is the artifact a user actually gets: exactly what `make build`
+//     produces, built through the Makefile rather than beside it.
+//   - mackupVCSBin forces VCS stamping on, so the harder half of the
+//     provenance contract is exercised on every machine and not only where the
+//     toolchain happens to stamp. Empty when the toolchain cannot stamp at all.
+//   - mackupStampedBin is a release build, `make build VERSION=...`. Built
+//     through the Makefile on purpose: the -X symbol path is spelled out there,
+//     the linker ignores a stale one in silence, and nothing else in the repo
+//     would notice a release binary that had quietly stopped carrying its
+//     version.
 var (
 	mackupBin        string
+	mackupVCSBin     string
 	mackupStampedBin string
 )
 
@@ -52,8 +62,8 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	// os.Exit does not run deferred functions, so the removal is spelled out
-	// at every exit below rather than deferred; otherwise each run leaks two
-	// binaries of a couple of megabytes into the temporary directory.
+	// at every exit below rather than deferred; otherwise each run leaks
+	// several megabytes of binaries into the temporary directory.
 	fail := func(err error) {
 		fmt.Fprintf(os.Stderr, "conformance: %v\n", err)
 		os.RemoveAll(dir)
@@ -62,26 +72,29 @@ func TestMain(m *testing.M) {
 
 	mackupBin = filepath.Join(dir, "mackup")
 	mackupStampedBin = filepath.Join(dir, "mackup-stamped")
+	if err := buildWithMake(mackupBin, ""); err != nil {
+		fail(err)
+	}
+	if err := buildWithMake(mackupStampedBin, stampedVersion); err != nil {
+		fail(err)
+	}
 
-	// The unstamped binary is built with VCS stamping forced on so that every
-	// machine exercises the harder half of the provenance contract of
-	// appspec/00-overview.md. -buildvcs defaults to auto and declines, without
-	// saying so, when it cannot read the repository; a build it declined to
-	// stamp reports the fallback token for the easy reason, and the case that
-	// asserts the token cannot then fail. This suite passed on a developer
-	// machine whose builds went unstamped while CI, whose checkout was
-	// stamped, failed on exactly that assertion.
+	// -buildvcs defaults to auto and declines, without saying so, when it
+	// cannot read the repository. A build it declined to stamp reports the
+	// fallback token for the trivial reason, so the case asserting the token
+	// cannot fail -- this suite passed on a developer machine whose builds went
+	// unstamped while CI, whose checkout was stamped, failed on exactly that
+	// assertion. Forcing the stamp gives the hard half a binary of its own.
 	//
 	// Where the toolchain cannot stamp at all -- a source tarball with no
-	// repository, where -buildvcs=true is a hard error -- the build is retried
-	// unstamped rather than losing the whole suite.
-	if err := build(mackupBin, "", forceVCSStamp); err != nil {
-		if err := build(mackupBin, "", defaultVCSStamp); err != nil {
-			fail(err)
-		}
-	}
-	if err := build(mackupStampedBin, stampedVersion, defaultVCSStamp); err != nil {
-		fail(err)
+	// repository, where -buildvcs=true is a hard error -- this build is simply
+	// unavailable. The suite does not silently fall back to an unstamped
+	// binary, which would restore the vacuous pass under a different name:
+	// requireVCSStampedBuild reports the degradation, skipping locally and
+	// failing under CI.
+	vcsBin := filepath.Join(dir, "mackup-vcs")
+	if err := buildForcingVCSStamp(vcsBin); err == nil {
+		mackupVCSBin = vcsBin
 	}
 
 	code := m.Run()
@@ -89,31 +102,56 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// Whether to force VCS stamping on a build; see its use in TestMain.
-const (
-	defaultVCSStamp = false
-	forceVCSStamp   = true
-)
-
-func build(out, version string, forceVCS bool) error {
-	args := []string{"build", "-o", out}
-	if forceVCS {
-		args = append(args, "-buildvcs=true")
+// requireVCSStampedBuild returns the binary built with VCS stamping forced on.
+// Under CI a missing one is a failure; elsewhere the case skips, so that a
+// degraded run is visible rather than green.
+func requireVCSStampedBuild(t *testing.T) string {
+	t.Helper()
+	if mackupVCSBin != "" {
+		return mackupVCSBin
 	}
-	if version != "" {
-		args = append(args, "-ldflags", "-X github.com/promptctl/macklebox/internal/version.value="+version)
+	const why = "this toolchain cannot stamp VCS information into a build (-buildvcs=true failed), so the pseudo-version half of the provenance contract cannot be exercised here"
+	if os.Getenv("CI") != "" {
+		t.Fatal(why)
 	}
-	args = append(args, "./cmd/mackup")
+	t.Skip(why)
+	return ""
+}
 
+// buildWithMake builds through the Makefile, so the suite exercises the same
+// build the project ships rather than a second one written beside it. version
+// is empty for a development build.
+func buildWithMake(out, version string) error {
 	root, err := moduleRoot()
 	if err != nil {
 		return err
 	}
 
-	cmd := exec.Command("go", args...)
+	args := []string{"build", "BINARY=" + out}
+	if version != "" {
+		args = append(args, "VERSION="+version)
+	}
+
+	cmd := exec.Command("make", args...)
 	cmd.Dir = root
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("building %s: %v\n%s", out, err, output)
+		return fmt.Errorf("building %s with make: %v\n%s", out, err, output)
+	}
+	return nil
+}
+
+// buildForcingVCSStamp builds with -buildvcs=true, which is an error rather
+// than a silent decline when the repository cannot be read.
+func buildForcingVCSStamp(out string) error {
+	root, err := moduleRoot()
+	if err != nil {
+		return err
+	}
+
+	cmd := exec.Command("go", "build", "-buildvcs=true", "-o", out, "./cmd/mackup")
+	cmd.Dir = root
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("building %s with VCS stamping forced on: %v\n%s", out, err, output)
 	}
 	return nil
 }
@@ -178,8 +216,11 @@ func NewWorld(t *testing.T) *World {
 	}
 }
 
-// UseStampedBinary switches this world to the build that carries a version
-// stamp, as an installed build does.
+// UseBinary switches this world to another of the builds under test.
+func (w *World) UseBinary(path string) { w.bin = path }
+
+// UseStampedBinary switches this world to the release build, which carries a
+// version stamp as an installed build does.
 func (w *World) UseStampedBinary() { w.bin = mackupStampedBin }
 
 // Setenv sets an environment variable for every command this world runs.
@@ -250,18 +291,18 @@ func (w *World) RunWithInput(input string, args ...string) Result {
 	}
 
 	return Result{
-		t:        w.t,
-		Args:     args,
+		t:    w.t,
+		Args: args,
+		// Read back off the exec.Cmd, not from w.environ(): what makes the
+		// world isolating is that this field was assigned, and a case that
+		// re-derived the value it should hold would pass just as happily if
+		// the assignment were deleted.
+		Env:      cmd.Env,
 		Stdout:   stdout.String(),
 		Stderr:   stderr.String(),
 		ExitCode: cmd.ProcessState.ExitCode(),
 	}
 }
-
-// Environ is the environment the program is run with, as name=value strings.
-// Exposed so a case can assert on the isolation itself rather than only on its
-// consequences.
-func (w *World) Environ() []string { return w.environ() }
 
 func (w *World) environ() []string {
 	env := make([]string, 0, len(w.env))
@@ -274,8 +315,10 @@ func (w *World) environ() []string {
 
 // Result is one observation of the boundary.
 type Result struct {
-	t        *testing.T
-	Args     []string
+	t    *testing.T
+	Args []string
+	// Env is the environment the process was run with, as name=value strings.
+	Env      []string
 	Stdout   string
 	Stderr   string
 	ExitCode int
@@ -386,21 +429,27 @@ func (w *World) Snapshot() Snapshot {
 		if err != nil {
 			return err
 		}
+		// The modification time is part of the record. Without it a run that
+		// rewrites a file with the bytes it already held -- a --dry-run that
+		// copied anyway, an "already in sync" backup that copied regardless --
+		// leaves an identical snapshot, and the assertion that exists to catch
+		// exactly that passes.
+		stamp := info.ModTime().UnixNano()
 		switch {
 		case info.Mode()&fs.ModeSymlink != 0:
 			target, err := os.Readlink(path)
 			if err != nil {
 				return err
 			}
-			snapshot[relative] = fmt.Sprintf("symlink %04o -> %s", info.Mode().Perm(), target)
+			snapshot[relative] = fmt.Sprintf("symlink %04o @%d -> %s", info.Mode().Perm(), stamp, target)
 		case entry.IsDir():
-			snapshot[relative] = fmt.Sprintf("dir %04o", info.Mode().Perm())
+			snapshot[relative] = fmt.Sprintf("dir %04o @%d", info.Mode().Perm(), stamp)
 		default:
 			content, err := os.ReadFile(path)
 			if err != nil {
 				return err
 			}
-			snapshot[relative] = fmt.Sprintf("file %04o %q", info.Mode().Perm(), content)
+			snapshot[relative] = fmt.Sprintf("file %04o @%d %q", info.Mode().Perm(), stamp, content)
 		}
 		return nil
 	})
