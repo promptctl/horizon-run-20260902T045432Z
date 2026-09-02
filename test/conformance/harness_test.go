@@ -106,6 +106,8 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "conformance: %v\n", err)
 		os.Exit(1)
 	}
+	keepBuildDirFresh(dir)
+
 	// The removal below is spelled out at each exit rather than deferred,
 	// since os.Exit skips defers.
 	fail := func(err error) {
@@ -211,7 +213,13 @@ func readImplementationSources() {
 			return nil
 		}
 		if entry.IsDir() {
-			if path != root && sourceWalkSkips[entry.Name()] {
+			// .git is history at whatever depth it appears -- a submodule has
+			// one too. bin is skipped only at the module root, because that
+			// is the one the Makefile writes; an internal/bin/ holding real
+			// source would otherwise drop out of the cache key on its name
+			// alone, which is the same silent degradation as the hardcoded
+			// cmd/ and internal/ list this walk replaced.
+			if entry.Name() == ".git" || path == filepath.Join(root, "bin") {
 				return fs.SkipDir
 			}
 			return nil
@@ -255,20 +263,37 @@ func readImplementationSources() {
 	}
 }
 
-// sourceWalkSkips are the directories readImplementationSources does not
-// descend into. Both hold things the build does not read: .git is history, and
-// bin is the Makefile's own output, which would otherwise put a rebuilt binary
-// into the cache key of the suite that builds it.
-var sourceWalkSkips = map[string]bool{".git": true, "bin": true}
-
 // buildDirPrefix names this suite's build directories, so that a later run can
 // recognize one an earlier run abandoned.
 const buildDirPrefix = "macklebox-conformance-bin-"
 
 // buildDirAbandonedAfter is how long a build directory must have gone untouched
-// before a later run treats it as abandoned. Comfortably longer than a suite
-// run, so a directory in active use by a concurrent run is never taken.
+// before a later run treats it as abandoned.
 const buildDirAbandonedAfter = time.Hour
+
+// buildDirTouchInterval is how often a running suite refreshes its own build
+// directory's modification time. Well inside buildDirAbandonedAfter, so a
+// directory in use is never old enough to be reaped.
+//
+// Without the refresh the mtime is set once, when the binaries are built, and
+// then never moves -- so "untouched for an hour" means "started over an hour
+// ago", not "idle". A run paused that long under a debugger would have its
+// binaries deleted out from under it by the next run to start, which is the
+// mid-suite hazard the per-run directory exists to prevent.
+const buildDirTouchInterval = 5 * time.Minute
+
+// keepBuildDirFresh refreshes dir's modification time until the process ends.
+// It is never stopped: the goroutine costs one timer, and the process it
+// belongs to is a test binary that exits from TestMain.
+func keepBuildDirFresh(dir string) {
+	go func() {
+		for {
+			time.Sleep(buildDirTouchInterval)
+			now := time.Now()
+			os.Chtimes(dir, now, now)
+		}
+	}()
+}
 
 // reapAbandonedBuildDirectories removes build directories left behind by runs
 // that crashed. Errors are ignored throughout: another user's directory is not
@@ -419,6 +444,23 @@ func NewWorld(t *testing.T) *World {
 	// cache key is only honest when this runs inside a case.
 	readSourcesOnce.Do(readImplementationSources)
 	root := t.TempDir()
+	// Registered after t.TempDir's own cleanup and so run before it, this
+	// makes the scratch root removable again. A case that leaves a directory
+	// unreadable -- the natural fixture for a tool that manages ~/.ssh and
+	// ~/.gnupg -- otherwise fails in testing's RemoveAll with a message about
+	// the harness, after every assertion in it has already passed. Verified by
+	// leaving a 0000 directory behind and watching the case fail in cleanup.
+	//
+	// WalkDir reports a directory before it reads it, so widening the mode
+	// here is what lets the walk descend to the next one.
+	t.Cleanup(func() {
+		filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err == nil && entry.IsDir() {
+				os.Chmod(path, 0o700)
+			}
+			return nil
+		})
+	})
 	home := filepath.Join(root, "home")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatalf("creating the home directory: %v", err)
@@ -634,11 +676,19 @@ func (w *World) Snapshot() Snapshot {
 	w.t.Helper()
 	snapshot := Snapshot{}
 	err := filepath.WalkDir(w.Root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+		relative, relErr := filepath.Rel(w.Root, path)
+		if relErr != nil {
+			return relErr
 		}
-		relative, err := filepath.Rel(w.Root, path)
 		if err != nil {
+			// A directory this process may not list. WalkDir has already
+			// reported it once without an error, so the entry is recorded;
+			// what is lost is what is inside it, which is said out loud in
+			// the record rather than by aborting the whole snapshot.
+			if errors.Is(err, fs.ErrPermission) {
+				snapshot[relative] += " <contents unreadable>"
+				return fs.SkipDir
+			}
 			return err
 		}
 		info, err := entry.Info()
@@ -670,6 +720,17 @@ func (w *World) Snapshot() Snapshot {
 		default:
 			content, err := os.ReadFile(path)
 			if err != nil {
+				// Recorded, not fatal. This is a tool for dotfiles, so a
+				// fixture like a 0600 ~/.ssh/id_rsa that this process cannot
+				// read is ordinary; aborting here would replace the case's
+				// own assertion with a complaint about the harness, and the
+				// post-condition the case exists to check would go unmade.
+				// Mode and stamp still come from the stat, so a rewrite is
+				// still visible.
+				if errors.Is(err, fs.ErrPermission) {
+					snapshot[relative] = fmt.Sprintf("file %04o @%d <unreadable>", info.Mode().Perm(), stamp)
+					return nil
+				}
 				return err
 			}
 			snapshot[relative] = fmt.Sprintf("file %04o @%d %q", info.Mode().Perm(), stamp, content)
