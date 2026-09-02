@@ -5,6 +5,12 @@ on:
     branches: [master]
   pull_request:
 
+# The job builds and runs code from the branch under review -- Makefile
+# recipes and test code that itself shells out -- so it gets the least token
+# the work needs, rather than whatever the repository default happens to be.
+permissions:
+  contents: read
+
 # A superseded commit's run is not worth paying for, but never cancel a run on
 # master: that one is the record of whether the branch is green.
 concurrency:

@@ -37,13 +37,19 @@ test:
 # does not change when the implementation changes, and a cached PASS survives
 # a broken program. Verified: replacing "Usage:" in internal/cli/usage.go left
 # `go test ./test/conformance/` reporting "ok (cached)" while -count=1 gave 10
-# failures. Never drop the flag, and never fold this package back into the
-# cached `go test ./...` run above.
+# failures.
+#
+# The `conformance` build tag is what enforces that, since a Makefile cannot:
+# it keeps the package out of the default build, so a plain `go test ./...`
+# -- an IDE, gopls, another CI job -- cannot report a cached pass for it
+# either. Never drop either the flag or the tag.
 conformance:
-	go test -count=1 ./test/conformance/
+	go test -count=1 -tags conformance ./test/conformance/
 
+# Tagged, so the conformance package is vetted too rather than skipped along
+# with the rest of the default build.
 vet:
-	go vet ./...
+	go vet -tags conformance ./...
 
 fmt:
 	gofmt -l -w ./cmd ./internal ./test

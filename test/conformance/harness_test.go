@@ -1,3 +1,14 @@
+//go:build conformance
+
+// The conformance suite is behind a build tag so that `go test ./...` -- what
+// an IDE, gopls, or a second CI job runs by default -- cannot report a cached
+// "ok" for it. This package imports nothing from cmd/ or internal/; it shells
+// out to `go build`, so the test cache key does not change when the program
+// does, and a stale pass outlives a program that has since been broken. A
+// Makefile cannot prevent that: only the tag can, by keeping the package out
+// of the default build entirely. Run it with `make conformance` (or
+// `go test -count=1 -tags conformance ./test/conformance/`).
+
 // Package conformance observes the built command the way appspec/00-overview.md
 // says the specification itself was written: by running the real program under
 // a throwaway home directory and watching its boundary -- stdout, stderr, the
@@ -20,6 +31,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // stampedVersion is the version the stamped binary is built with. It is
@@ -59,24 +71,25 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	// A fixed directory rather than a fresh one per run, because it has to be
-	// findable by a later run: os.Exit does not run deferred functions, and a
-	// panicking test never returns from m.Run() at all -- the testing package
-	// re-panics on the test's own goroutine, which cannot be recovered from
-	// here -- so a crashed run always leaves its binaries behind. Clearing the
-	// directory on the way in bounds that at one run's worth of megabytes
-	// rather than one run's worth per crash.
+	// This run gets a directory of its own, and reaps what earlier runs
+	// abandoned. Both halves are needed:
 	//
-	// The cost is that two suites running against the same TMPDIR at the same
-	// time would clobber each other's binaries. Go runs one instance of a
-	// package's tests at a time, so that takes two concurrent `go test`
-	// invocations by hand, and is the better trade against an unbounded leak.
-	dir := filepath.Join(os.TempDir(), "macklebox-conformance-bin")
-	if err := os.RemoveAll(dir); err != nil {
-		fmt.Fprintf(os.Stderr, "conformance: %v\n", err)
-		os.Exit(1)
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	// Its own, because a shared name is not this run's to delete. Two
+	// checkouts or worktrees running the suite at once would replace each
+	// other's binaries mid-suite -- either failing to exec, or worse, quietly
+	// testing the other checkout's program and reporting a result for code it
+	// never built -- and under a sticky /tmp a directory another user created
+	// at 0700 cannot be removed at all, so the suite would abort before a
+	// single case ran.
+	//
+	// And reaping, because a crashed run cannot clean up after itself: os.Exit
+	// skips deferred functions, and a panicking test never returns from
+	// m.Run() at all, since the testing package re-panics on the test's own
+	// goroutine where nothing here can recover. Without a reaper each crash
+	// abandons several megabytes for good.
+	reapAbandonedBuildDirectories()
+	dir, err := os.MkdirTemp("", buildDirPrefix)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "conformance: %v\n", err)
 		os.Exit(1)
 	}
@@ -125,6 +138,33 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
+}
+
+// buildDirPrefix names this suite's build directories, so that a later run can
+// recognize one an earlier run abandoned.
+const buildDirPrefix = "macklebox-conformance-bin-"
+
+// buildDirAbandonedAfter is how long a build directory must have gone untouched
+// before a later run treats it as abandoned. Comfortably longer than a suite
+// run, so a directory in active use by a concurrent run is never taken.
+const buildDirAbandonedAfter = time.Hour
+
+// reapAbandonedBuildDirectories removes build directories left behind by runs
+// that crashed. Errors are ignored throughout: another user's directory is not
+// ours to remove, and failing to reclaim disk space is not a reason to fail a
+// test run.
+func reapAbandonedBuildDirectories() {
+	matches, err := filepath.Glob(filepath.Join(os.TempDir(), buildDirPrefix+"*"))
+	if err != nil {
+		return
+	}
+	for _, path := range matches {
+		info, err := os.Stat(path)
+		if err != nil || time.Since(info.ModTime()) < buildDirAbandonedAfter {
+			continue
+		}
+		os.RemoveAll(path)
+	}
 }
 
 // requireVCSStampedBuild returns the binary built with VCS stamping forced on.

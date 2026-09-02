@@ -1,3 +1,14 @@
+//go:build conformance
+
+// The conformance suite is behind a build tag so that `go test ./...` -- what
+// an IDE, gopls, or a second CI job runs by default -- cannot report a cached
+// "ok" for it. This package imports nothing from cmd/ or internal/; it shells
+// out to `go build`, so the test cache key does not change when the program
+// does, and a stale pass outlives a program that has since been broken. A
+// Makefile cannot prevent that: only the tag can, by keeping the package out
+// of the default build entirely. Run it with `make conformance` (or
+// `go test -count=1 -tags conformance ./test/conformance/`).
+
 package conformance
 
 import (
@@ -129,10 +140,23 @@ func TestHelpAndVersionStopTheArgvScanWhereTheyAreFound(t *testing.T) {
 	NewWorld(t).Run("--nope", "--help").ExpectExit(1).ExpectStderr("--nope")
 
 	// -c takes an argument, so --help here is that argument, not the flag:
-	// this is a `list` run with a (nonsense) config path, not a help request.
-	// Silence on stdout alone would not show that -- a crashed binary is
-	// silent too -- so the case asserts the run reached list.
-	NewWorld(t).Run("-c", "--help", "list").ExpectNotImplemented("list")
+	// this is a `list` run with a nonsense config path, not a help request.
+	//
+	// What is asserted is the parser property alone -- help was not printed --
+	// because the stage that rejects this run is going to move. Today nothing
+	// reads the config and it reaches dispatch; once loadConfig lands
+	// (macklebox-resolvers-5iw.2) "--help" is a config path that does not
+	// exist and is not inside the home directory, so the run will abort at the
+	// config gate instead. Both end at exit 1 with nothing on stdout, whereas
+	// --help taken as the flag would exit 0 with the usage block on stdout,
+	// and a crash would not exit 1 at all. Tighten this to the config-error
+	// message when that ticket lands.
+	result := NewWorld(t).Run("-c", "--help", "list").
+		ExpectExit(1).
+		ExpectSilentStdout()
+	if result.Stderr == "" {
+		t.Error("mackup -c --help list said nothing at all; want a diagnostic on stderr")
+	}
 }
 
 func TestUnrecognizedSubcommandWarnsThenPrintsUsageOnStderr(t *testing.T) {
@@ -217,8 +241,14 @@ func TestEveryInvocationFormIsAcceptedAndReachesItsCommand(t *testing.T) {
 }
 
 func TestOptionsAreAcceptedOnEitherSideOfTheSubcommand(t *testing.T) {
-	// appspec/02: "Options may be given before or after the subcommand." Each
-	// form must select the same command whichever side its options sit on.
+	// Half spec, half policy, and the halves are worth keeping apart.
+	//
+	// appspec/02-invocation.md says only "Options may appear before the
+	// subcommand", so the first form below is the contract. Accepting them
+	// after it as well is this implementation's own choice -- stated in its
+	// help text, which appspec/02 declares human-facing and not contract -- and
+	// the remaining forms pin that choice so it cannot be lost by accident,
+	// not because the spec requires it.
 	for _, args := range [][]string{
 		{"-f", "-n", "-v", "-r", "backup", "vim"},
 		{"backup", "vim", "--force", "--dry-run", "--verbose", "--root"},

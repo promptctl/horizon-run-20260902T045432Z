@@ -39,7 +39,7 @@ only.
 ```sh
 make build        # -> bin/mackup   (release builds stamp VERSION=x.y.z)
 make check        # go vet, go test (unit + conformance), gofmt check
-make conformance  # the black-box suite alone
+make conformance  # the black-box suite alone (needs -tags conformance)
 ```
 
 `make check` is the gate: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
@@ -62,11 +62,14 @@ arbitrary path, so the Mackup folder need not live under `HOME`. A case that
 can only be checked by calling an internal function belongs in that package's
 own tests instead.
 
-The suite always runs with **`-count=1`**, and the Makefile keeps it out of the
-plain `go test ./...` run so that it does. The package imports nothing from
-`cmd/` or `internal/` — it shells out to `go build` — so Go's test cache cannot
-see the implementation, and a cached `ok` will happily outlive a program that
-has since been broken. Do not remove the flag.
+The suite is behind the **`conformance` build tag** and always runs with
+**`-count=1`**. The package imports nothing from `cmd/` or `internal/` — it
+shells out to `go build` — so Go's test cache cannot see the implementation,
+and a cached `ok` will happily outlive a program that has since been broken.
+`-count=1` defeats that in the Makefile; the tag is what defeats it everywhere
+else, by keeping the package out of the default build so that a plain
+`go test ./...` — an IDE, `gopls`, another CI job — cannot report a stale pass
+for it either. Do not remove either one.
 
 Every case must be able to fail for the reason it claims. Two rules follow:
 assert what the program *did*, never merely that it did not print a usage
