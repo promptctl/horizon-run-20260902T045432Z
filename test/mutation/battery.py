@@ -384,8 +384,7 @@ MUTATIONS = [
  # carries Helper, Errorf and Fatalf but no Logf. Rule 1 caught it as
  # DOES-NOT-COMPILE, which is what rule 1 is for.
  ("the blind-directory report is dropped", [repl(H,
-   'w.t.Errorf("%s could not be listed, so this assertion is blind to a file rewritten in place inside it; make the fixture readable, or assert on what is in there directly", path)',
-   '_ = path')],
+   'w.t.Errorf("%s", message)', '_ = message')],
    "no report names home/locked"),
 
  # Snapshot's third permission shape: a 0400 parent, whose children ReadDir
