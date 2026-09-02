@@ -12,10 +12,6 @@ PKG     := ./cmd/mackup
 VERSION ?=
 LDFLAGS := $(if $(VERSION),-ldflags "-X github.com/promptctl/macklebox/internal/version.value=$(VERSION)")
 
-# The conformance suite is excluded from the plain `go test ./...` run and
-# invoked separately; see the conformance target for why.
-UNIT_PKGS = $$(go list ./... | grep -v '/test/conformance$$')
-
 .PHONY: all build test conformance vet fmt check clean
 
 all: check build
@@ -23,8 +19,14 @@ all: check build
 build:
 	go build $(LDFLAGS) -o $(BINARY) $(PKG)
 
+# Every package but the conformance suite, which is run separately below; see
+# the conformance target for why. An empty package list would make `go test`
+# fall through to the current directory and report success having run nothing,
+# so the list is checked before it is used.
 test:
-	go test $(UNIT_PKGS)
+	@packages="$$(go list ./... | grep -v '/test/conformance$$')"; \
+		test -n "$$packages" || { echo "make: go list produced no packages" >&2; exit 1; }; \
+		go test $$packages
 	@$(MAKE) --no-print-directory conformance
 
 # The black-box suite on its own: it builds the command and observes it under a

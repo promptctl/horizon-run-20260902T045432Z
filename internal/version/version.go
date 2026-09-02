@@ -29,11 +29,44 @@ func String() string {
 		return normalize(value)
 	}
 	if bi, ok := debug.ReadBuildInfo(); ok {
-		if v := bi.Main.Version; v != "" && v != "(devel)" {
-			return normalize(v)
+		if v := fromBuildInfo(bi); v != "" {
+			return v
 		}
 	}
 	return Fallback
+}
+
+// fromBuildInfo reads the package version out of the build info, or returns ""
+// when the build carries none and the fallback token is owed.
+//
+// A build made from a working tree is an uninstalled tree whatever it calls
+// itself, and since Go 1.24 such a build is no longer labelled "(devel)": the
+// toolchain derives a pseudo-version from the checkout's own commit, so a
+// developer build reports something like
+// "0.0.0-20260902061304-da54d01d3c9b+dirty". That is a build identity, not a
+// package version -- precisely the case appspec/00-overview.md says must
+// report the literal token "unknown".
+//
+// The two are told apart by provenance rather than by the shape of the string:
+// a build from a checkout carries vcs.* build settings, and one installed from
+// the module cache (go install <pkg>@v0.1.0) does not. Both were observed
+// directly on go1.25.7 before this was written.
+//
+// Whether the toolchain stamps VCS information at all is environment-
+// dependent (-buildvcs defaults to auto, and it declines, without saying so,
+// when it cannot read the repository), which is why this cannot be decided
+// from the shape of Main.Version: the same source tree yields "(devel)" on one
+// machine and a pseudo-version on another.
+func fromBuildInfo(bi *debug.BuildInfo) string {
+	for _, setting := range bi.Settings {
+		if setting.Key == "vcs.revision" {
+			return ""
+		}
+	}
+	if v := bi.Main.Version; v != "" && v != "(devel)" {
+		return normalize(v)
+	}
+	return ""
 }
 
 // normalize drops the "v" that a Go module version always carries

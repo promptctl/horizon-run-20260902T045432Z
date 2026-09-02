@@ -62,10 +62,25 @@ func TestMain(m *testing.M) {
 
 	mackupBin = filepath.Join(dir, "mackup")
 	mackupStampedBin = filepath.Join(dir, "mackup-stamped")
-	if err := build(mackupBin, ""); err != nil {
-		fail(err)
+
+	// The unstamped binary is built with VCS stamping forced on so that every
+	// machine exercises the harder half of the provenance contract of
+	// appspec/00-overview.md. -buildvcs defaults to auto and declines, without
+	// saying so, when it cannot read the repository; a build it declined to
+	// stamp reports the fallback token for the easy reason, and the case that
+	// asserts the token cannot then fail. This suite passed on a developer
+	// machine whose builds went unstamped while CI, whose checkout was
+	// stamped, failed on exactly that assertion.
+	//
+	// Where the toolchain cannot stamp at all -- a source tarball with no
+	// repository, where -buildvcs=true is a hard error -- the build is retried
+	// unstamped rather than losing the whole suite.
+	if err := build(mackupBin, "", forceVCSStamp); err != nil {
+		if err := build(mackupBin, "", defaultVCSStamp); err != nil {
+			fail(err)
+		}
 	}
-	if err := build(mackupStampedBin, stampedVersion); err != nil {
+	if err := build(mackupStampedBin, stampedVersion, defaultVCSStamp); err != nil {
 		fail(err)
 	}
 
@@ -74,8 +89,17 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func build(out, version string) error {
+// Whether to force VCS stamping on a build; see its use in TestMain.
+const (
+	defaultVCSStamp = false
+	forceVCSStamp   = true
+)
+
+func build(out, version string, forceVCS bool) error {
 	args := []string{"build", "-o", out}
+	if forceVCS {
+		args = append(args, "-buildvcs=true")
+	}
 	if version != "" {
 		args = append(args, "-ldflags", "-X github.com/promptctl/macklebox/internal/version.value="+version)
 	}
