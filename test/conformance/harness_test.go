@@ -511,8 +511,22 @@ func moduleRoot() (string, error) {
 // reads -- HOME, XDG_CONFIG_HOME, MACKUP_CONFIG -- is never leaked in from the
 // developer's shell and cannot make a case pass on one machine and fail on
 // another.
+// reporter is the part of *testing.T the harness reports failures through.
+//
+// It is an interface for exactly one reason: without a seam here, nothing can
+// observe that ExpectUnchanged reported anything, and a case that asserts the
+// filesystem is unchanged is unfalsifiable. That is not hypothetical --
+// replacing ExpectUnchanged's body with `_ = before` left the whole suite
+// reporting ok, with six cases carrying the spec's "touched nothing" promises
+// asserting nothing at all. captureReport is what closes that.
+type reporter interface {
+	Helper()
+	Errorf(format string, args ...any)
+	Fatalf(format string, args ...any)
+}
+
 type World struct {
-	t *testing.T
+	t reporter
 
 	// Root is the scratch directory; Home is the home directory inside it.
 	Root string
@@ -659,7 +673,7 @@ func (w *World) environ() []string {
 
 // Result is one observation of the boundary.
 type Result struct {
-	t    *testing.T
+	t    reporter
 	Args []string
 	// Env is the environment the process was run with, as name=value strings.
 	Env      []string
@@ -839,6 +853,50 @@ func (w *World) Snapshot() Snapshot {
 		w.t.Fatalf("snapshotting the scratch root: %v", err)
 	}
 	return snapshot
+}
+
+// recordingReporter stands in for *testing.T so a case can assert on what the
+// harness reported instead of being failed by it.
+//
+// Fatalf panics rather than recording and continuing: the real one does not
+// return, and a stand-in that let execution run on would turn a harness
+// failure into whatever the code after it happened to do next.
+type recordingReporter struct {
+	messages []string
+}
+
+type fatalFromRecorder string
+
+func (r *recordingReporter) Helper() {}
+
+func (r *recordingReporter) Errorf(format string, args ...any) {
+	r.messages = append(r.messages, fmt.Sprintf(format, args...))
+}
+
+func (r *recordingReporter) Fatalf(format string, args ...any) {
+	panic(fatalFromRecorder(fmt.Sprintf(format, args...)))
+}
+
+// captureReport runs fn with the world reporting into a recorder, and returns
+// what it reported. A Fatalf inside fn is re-raised on the real *testing.T,
+// so a broken harness still stops the case rather than being swallowed here.
+func (w *World) captureReport(t *testing.T, fn func()) []string {
+	t.Helper()
+	original := w.t
+	recorder := &recordingReporter{}
+	w.t = recorder
+	defer func() {
+		w.t = original
+		if raised := recover(); raised != nil {
+			fatal, ok := raised.(fatalFromRecorder)
+			if !ok {
+				panic(raised)
+			}
+			t.Fatalf("the harness failed while its report was being captured: %s", string(fatal))
+		}
+	}()
+	fn()
+	return recorder.messages
 }
 
 // ExpectUnchanged asserts the scratch root still matches before.

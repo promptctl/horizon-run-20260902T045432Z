@@ -28,12 +28,25 @@ jobs:
           # Track the toolchain go.mod declares rather than pinning a second
           # version here that can drift away from it.
           go-version-file: go.mod
-          # This module has no dependencies and so no go.sum, which is the
-          # only file setup-go keys its cache on. Left at its default the step
-          # logs "Restore cache failed: Dependencies file is not found" on
-          # every run and caches nothing, which reads like a broken cache
-          # rather than an absent one.
-          cache: false
+          # setup-go@v5 keys its cache on go.sum, and this module has no
+          # dependencies and so no go.sum: left at its default the step warns
+          # "Restore cache failed: Dependencies file is not found" and caches
+          # nothing. Pointing it at go.mod is what fixes that -- the input is
+          # used verbatim, so any file that hashes will do.
+          #
+          # Turning the cache off instead, which this did first, reasoned only
+          # about dependencies and threw away the half that matters here.
+          # setup-go caches `go env GOCACHE` as well as `go env GOMODCACHE`,
+          # and for a module with no dependencies the build cache is the whole
+          # benefit: it is what carries compiled standard-library and package
+          # objects from one run to the next. (Once per run, not once per step
+          # -- GOCACHE is shared by vet, the tests and the build within a job,
+          # so the cost this saves is the cold first compile, not four of
+          # them.) A stale entry cannot corrupt a result --
+          # the build cache is content-addressed, and the one place a restored
+          # cache could serve a stale PASS, the conformance suite, is pinned by
+          # -count=1 in the Makefile for reasons recorded there.
+          cache-dependency-path: go.mod
 
       # vet, the unit tests, the black-box conformance suite, and the gofmt
       # check -- the same single gate a developer runs locally.

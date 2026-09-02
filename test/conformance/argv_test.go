@@ -350,6 +350,114 @@ func TestTheSnapshotWatchesTheWholeScratchRoot(t *testing.T) {
 	}
 }
 
+func TestExpectUnchangedReportsEveryShapeOfChange(t *testing.T) {
+	// Six cases carry the spec promises no single command states -- --help
+	// touches nothing (appspec/02), a rejected run leaves the filesystem
+	// alone, --dry-run performs no copy (appspec/01 sections 3 and 6) -- and
+	// every one of them makes that assertion through ExpectUnchanged. Nothing
+	// checked that ExpectUnchanged reports anything at all: replacing its body
+	// with `_ = before` left the whole suite reporting ok, and dropping the
+	// content field from Snapshot did too. An assertion that cannot fail is
+	// not an assertion, so this pins the comparison directly.
+	//
+	// A world per shape. Sharing one would let a shape observe the wreckage
+	// the previous one left, and the first draft of this case did exactly
+	// that -- the removal ran, its restore did not, and the shape after it
+	// failed on a missing file rather than on what it was checking.
+	const original = "[storage]\nengine = file_system\n"
+
+	t.Run("nothing changed", func(t *testing.T) {
+		// First, so the shapes below cannot pass by way of an ExpectUnchanged
+		// that reports unconditionally.
+		world := NewWorld(t)
+		world.WriteFile(".mackup.cfg", original, 0o600)
+		if reported := world.captureReport(t, func() { world.ExpectUnchanged(world.Snapshot()) }); len(reported) != 0 {
+			t.Errorf("ExpectUnchanged reported %v with nothing changed", reported)
+		}
+	})
+
+	t.Run("a file created", func(t *testing.T) {
+		world := NewWorld(t)
+		before := world.Snapshot()
+		world.WriteFile("appeared", "", 0o600)
+		expectReported(t, world.captureReport(t, func() { world.ExpectUnchanged(before) }),
+			world.SnapshotKey("appeared"), "was created")
+	})
+
+	t.Run("a file removed", func(t *testing.T) {
+		world := NewWorld(t)
+		path := world.WriteFile(".mackup.cfg", original, 0o600)
+		before := world.Snapshot()
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("removing %s: %v", path, err)
+		}
+		expectReported(t, world.captureReport(t, func() { world.ExpectUnchanged(before) }),
+			world.SnapshotKey(".mackup.cfg"), "was removed")
+	})
+
+	t.Run("content replaced at the same size and the same modification time", func(t *testing.T) {
+		// The shape that pins the content field specifically. A rewrite moves
+		// the stamp, so a plain edit is caught by the stamp alone and would
+		// stay green with content dropped from Snapshot -- the mutation that
+		// motivated this case. Restoring the stamp leaves the bytes as the
+		// only field that differs. This is the mirror of the case below,
+		// which holds the bytes and moves the stamp.
+		//
+		// Nothing else in the world moves, so this shape expects exactly one
+		// report: rewriting a file does not touch its directory's stamp, and
+		// creating or removing one does, which is why the shapes above look
+		// for their own entry among several.
+		world := NewWorld(t)
+		path := world.WriteFile(".mackup.cfg", original, 0o600)
+		key := world.SnapshotKey(".mackup.cfg")
+		stat, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		before := world.Snapshot()
+
+		if err := os.WriteFile(path, []byte(strings.Repeat("x", len(original))), 0o600); err != nil {
+			t.Fatalf("rewriting %s: %v", path, err)
+		}
+		if err := os.Chtimes(path, stat.ModTime(), stat.ModTime()); err != nil {
+			t.Fatalf("restoring the modification time of %s: %v", path, err)
+		}
+
+		// The instrument, checked before it is trusted. If the filesystem
+		// would not take the stamp back -- a coarse or truncating one -- the
+		// stamp differs too and this case would pass without the content
+		// field ever being consulted, which is the one thing it exists to
+		// prove.
+		restored, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		if !restored.ModTime().Equal(stat.ModTime()) {
+			t.Skipf("this filesystem would not restore %s's modification time (%s, then %s after Chtimes), so a same-size rewrite is visible through the stamp and this case cannot isolate the content field", key, stat.ModTime(), restored.ModTime())
+		}
+
+		reported := world.captureReport(t, func() { world.ExpectUnchanged(before) })
+		if len(reported) != 1 {
+			t.Fatalf("ExpectUnchanged reported %d changes, want exactly 1 -- only the rewritten file moved: %v", len(reported), reported)
+		}
+		expectReported(t, reported, key, "changed")
+	})
+}
+
+// expectReported asserts that some report names both the path and the kind of
+// change. Creating or removing a file also moves its directory's modification
+// time, so a shape legitimately produces more than one report; what must not
+// happen is the entry itself going unreported.
+func expectReported(t *testing.T, reported []string, path, want string) {
+	t.Helper()
+	for _, message := range reported {
+		if strings.Contains(message, path) && strings.Contains(message, want) {
+			return
+		}
+	}
+	t.Errorf("no report names %s as %q; ExpectUnchanged reported %v", path, want, reported)
+}
+
 func TestTheSnapshotSeesAFileRewrittenWithTheBytesItAlreadyHeld(t *testing.T) {
 	// appspec/01 section 3's dry-run contract is "perform no copy/move/delete/
 	// symlink", not "leave the same bytes". A copy that ran when it should not

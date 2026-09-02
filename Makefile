@@ -41,14 +41,28 @@ test:
 # The black-box suite on its own: it builds the command and observes it under a
 # throwaway home directory. `make test` runs it too, as its own step.
 #
-# -count=1 is load-bearing, not a habit. This package imports nothing from
-# cmd/ or internal/ -- it shells out to `go build` -- so nothing about the
-# implementation reaches the test cache key on its own, and a cached PASS
-# survives a broken program. Verified: replacing "Usage:" in
-# internal/cli/usage.go left `go test -tags conformance ./test/conformance/`
-# reporting "ok (cached)" while -count=1 gave 10 failures. The tag belongs in
-# that command -- without it the package is excluded from the build and the
-# run fails on setup, which says nothing about caching either way.
+# -count=1 is load-bearing, not a habit, but the gap it closes is narrower
+# than this comment used to claim and the claim is corrected here rather than
+# deleted. It said nothing about the implementation reaches the test cache key,
+# citing a reword of "Usage:" in internal/cli/usage.go that served a cached
+# PASS. That no longer reproduces: readImplementationSources opens every file
+# under the module root from inside a case, so cmd/go records the reads and
+# that reword now fails without -count=1. Re-verified after the walk landed.
+#
+# What remains is the limit of the mechanism itself. cmd/go's hashOpen folds
+# in size, mode and mtime and explicitly not content, so an edit that moves
+# neither is invisible to it. Verified, and it is not a thought experiment:
+# rewriting "Usage:" as "Usage!" -- the same byte length -- and putting the
+# nanosecond mtime back with utime left `go test -tags conformance
+# ./test/conformance/` reporting "ok (cached)" over a program whose banner was
+# broken, while the same tree under -count=1 failed. (Restore the stamp with
+# nanosecond precision or the experiment lies: utime given float seconds
+# truncates, the mtime differs, and the run misses the cache for that reason
+# instead.)
+#
+# The tag belongs in that command -- without it the package is excluded from
+# the build and the run fails on setup, which says nothing about caching
+# either way.
 #
 # This flag only covers what runs through this recipe. Two other mechanisms
 # cover what does not, and the header of test/conformance/harness_test.go says
