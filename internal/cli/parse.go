@@ -122,14 +122,11 @@ func Parse(argv []string) (Invocation, error) {
 	var inv Invocation
 	var positional []string
 
-	endOfOpts := false
 	for i := 0; i < len(argv); i++ {
 		arg := argv[i]
 		switch {
-		case endOfOpts || arg == "-" || !strings.HasPrefix(arg, "-"):
+		case arg == "-" || !strings.HasPrefix(arg, "-"):
 			positional = append(positional, arg)
-		case arg == "--":
-			endOfOpts = true
 		case strings.HasPrefix(arg, "--"):
 			name, value, hasValue := strings.Cut(arg[2:], "=")
 			takesArg, known := longOpts[name]

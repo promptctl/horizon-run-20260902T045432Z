@@ -33,9 +33,11 @@ func Main(argv []string, streams *ui.IO) int {
 	// it cannot report one. Only the closed-pipe case on stdout/stderr is
 	// handled for us (Go raises SIGPIPE there); a redirect to a full disk is
 	// not, and would otherwise exit 0 with truncated output.
-	if err := streams.WriteError(); err != nil && code == ExitOK {
+	if err := streams.WriteError(); err != nil {
 		streams.Errf("Error: unable to write output: %s\n", err)
-		return ExitFailure
+		if code == ExitOK {
+			return ExitFailure
+		}
 	}
 	return code
 }

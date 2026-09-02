@@ -25,5 +25,7 @@ func assembleApplicationDatabase(cli.Invocation) error { return nil }
 // root guard and storage-root existence for every command, plus the
 // per-command Mackup-folder gate.
 //
-// TODO(macklebox-resolvers-5iw.4): implement the usable-environment level.
+// TODO(macklebox-resolvers-5iw.4): implement the usable-environment level --
+// the root guard and storage-root existence. The per-command Mackup-folder
+// gate arrives with the commands that need it.
 func environmentGate(cli.Invocation) error { return nil }

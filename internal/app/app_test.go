@@ -52,9 +52,8 @@ func TestVersionPrintsTheMackupLineToStdout(t *testing.T) {
 }
 
 func TestHelpAndVersionShortCircuitBeforeAnythingElse(t *testing.T) {
-	// appspec/02: they are the only paths that succeed while skipping the
-	// config-load gate, and they take no other action -- not even the force
-	// conflict check reached below them.
+	// appspec/02: they take no other action -- not even the force conflict
+	// check reached below them.
 	if got := run("--help", "--force", "--force-no", "backup"); got.code != ExitOK || !strings.Contains(got.stdout, "Usage:") {
 		t.Errorf("help with conflicting force flags = %+v, want usage on stdout exit 0", got)
 	}

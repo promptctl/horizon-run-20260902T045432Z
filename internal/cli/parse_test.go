@@ -147,16 +147,6 @@ func TestParseLinkModeKeywordsWinOverApplicationKeys(t *testing.T) {
 	}
 }
 
-func TestParseDoubleDashEndsOptions(t *testing.T) {
-	inv, err := Parse([]string{"show", "--", "-weird-app-key"})
-	if err != nil {
-		t.Fatalf("Parse = error %v", err)
-	}
-	if inv.Cmd != CmdShow || inv.Application != "-weird-app-key" {
-		t.Errorf("Parse = (%v, %q), want (show, -weird-app-key)", inv.Cmd, inv.Application)
-	}
-}
-
 func TestParseHelpAndVersionStopTheScan(t *testing.T) {
 	// appspec/02 gives --help and --version their own usage lines and says
 	// each takes no other action, so nothing after one is examined.
@@ -194,5 +184,17 @@ func TestParseStillRejectsABadOptionSeenBeforeHelp(t *testing.T) {
 	var usageErr *UsageError
 	if _, err := Parse([]string{"--nope", "--help"}); !errors.As(err, &usageErr) {
 		t.Errorf("Parse(--nope --help) = %v, want a *UsageError: --nope genuinely came first", err)
+	}
+}
+
+func TestParseRejectsTheUndocumentedDoubleDash(t *testing.T) {
+	// appspec/02-invocation.md never mentions "--", and no application key in
+	// appspec/appendix-application-names.md begins with a dash, so there is
+	// nothing for an end-of-options marker to disambiguate.
+	var usageErr *UsageError
+	for _, argv := range [][]string{{"--", "list"}, {"backup", "--", "vim"}} {
+		if _, err := Parse(argv); !errors.As(err, &usageErr) {
+			t.Errorf("Parse(%q) = %v, want a *UsageError", argv, err)
+		}
 	}
 }
