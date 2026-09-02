@@ -79,8 +79,8 @@ jobs:
 
       # The mutation battery's anchors, resolved against this commit. Its own
       # step and not part of `make check`, for the reason the anchors target
-      # records: the battery runs `make check` over a mutated tree, and 7 of its
-      # 52 entries rewrite a line another entry anchors on, so a step inside the
+      # records: the battery runs `make check` over a mutated tree, and 13 of its
+      # 59 entries rewrite a line another entry anchors on, so a step inside the
       # gate would turn a SURVIVED into a phantom kill. Here it costs a second
       # and catches the breakage on the push that caused it, rather than an hour
       # into the next full run.

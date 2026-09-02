@@ -16,7 +16,7 @@ func TestWriteErrorIsNilWhenEveryMessageIsDelivered(t *testing.T) {
 	var out, errOut strings.Builder
 	streams := &IO{In: strings.NewReader(""), Out: &out, Err: &errOut}
 	streams.Outln("progress")
-	streams.Errf("Error: %s\n", "boom")
+	streams.Errln("Error: boom")
 	if err := streams.WriteError(); err != nil {
 		t.Errorf("WriteError() = %v, want nil", err)
 	}

@@ -26,17 +26,24 @@ type IO struct {
 	writeErr error
 }
 
-// Outln writes text and a newline to stdout.
+// Outln and Errln write text and a newline, uncoloured, to the named stream.
+//
+// They are the ONLY writers here that name a stream instead of a level, and
+// they exist for one message: the argument parser's usage block, which
+// appspec/07's colour scheme assigns no level and which appspec/02 declares
+// human-facing wording rather than contract. It goes to stdout for --help and
+// a bare invocation, and to stderr after a usage-error diagnostic -- the same
+// text on either stream, which is why it cannot be a level.
+//
+// Everything else uses Say/Sayf and names its level, which picks the stream.
+// The formatted spellings of these two were deleted along the way: an
+// uncoloured writer that both names a stream and formats is the shape every
+// misrouted message in appspec/07's "Do not generalize warnings -> stderr"
+// paragraph would take, and nothing needs one.
 func (s *IO) Outln(text string) { s.write(s.Out, "%s\n", text) }
 
-// Outf writes a formatted message to stdout. No newline is added.
-func (s *IO) Outf(format string, args ...any) { s.write(s.Out, format, args...) }
-
-// Errln writes text and a newline to stderr.
+// Errln writes text and a newline to stderr. See Outln.
 func (s *IO) Errln(text string) { s.write(s.Err, "%s\n", text) }
-
-// Errf writes a formatted message to stderr. No newline is added.
-func (s *IO) Errf(format string, args ...any) { s.write(s.Err, format, args...) }
 
 // WriteError reports the first write failure on either stream, or nil if every
 // message was delivered.

@@ -33,12 +33,12 @@ func dispatch(inv cli.Invocation, streams *ui.IO) int {
 		// refuse to clobber a file the user substituted.
 		return notImplemented(inv, streams)
 	default:
-		streams.Errf("mackup: unhandled command: %v\n", inv.Cmd)
+		streams.Sayf(ui.Fatal, "mackup: unhandled command: %v", inv.Cmd)
 		return ExitFailure
 	}
 }
 
 func notImplemented(inv cli.Invocation, streams *ui.IO) int {
-	streams.Errf("Error: %s is not implemented yet.\n", inv.Cmd)
+	streams.Sayf(ui.Fatal, "Error: %s is not implemented yet.", inv.Cmd)
 	return ExitFailure
 }
