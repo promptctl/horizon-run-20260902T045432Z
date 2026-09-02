@@ -603,12 +603,31 @@ func NewWorld(t *testing.T) *World {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatalf("creating the home directory: %v", err)
 	}
+	// TMPDIR inside the root, so the scratch root really is the whole world.
+	// Snapshot walks the root and nothing else, so a temporary file the
+	// program writes through os.TempDir would land outside it and go
+	// unrecorded -- and "changed nothing" would hold over a run that wrote.
+	// That is not a remote shape for this program: an atomic copy through
+	// os.CreateTemp is the ordinary way to implement appspec/01 section 3's
+	// copy operations, and it would arrive with every existing --dry-run and
+	// rejected-run assertion silently narrowed.
+	//
+	// Created here rather than left to the program, which is entitled to
+	// assume TMPDIR exists.
+	tmp := filepath.Join(root, "tmp")
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		t.Fatalf("creating the temporary directory: %v", err)
+	}
 	return &World{
 		t:    t,
 		Root: root,
 		Home: home,
 		bin:  mackupBin,
-		env:  map[string]string{"HOME": home, "PATH": os.Getenv("PATH")},
+		env: map[string]string{
+			"HOME":   home,
+			"PATH":   os.Getenv("PATH"),
+			"TMPDIR": tmp,
+		},
 	}
 }
 
@@ -687,7 +706,7 @@ func (w *World) RunWithInput(input string, args ...string) Result {
 	}
 
 	return Result{
-		t:    w.t,
+		w:    w,
 		Args: args,
 		// Read back off the exec.Cmd, not from w.environ(): what makes the
 		// world isolating is that this field was assigned, and a case that
@@ -711,7 +730,14 @@ func (w *World) environ() []string {
 
 // Result is one observation of the boundary.
 type Result struct {
-	t    reporter
+	// The world rather than its reporter: captureReport swaps w.t for the
+	// duration of a call and puts it back, so a Result that had copied the
+	// reporter would keep a recorder nobody reads once the capture ends, and
+	// every assertion made on it afterwards would report into the void. That
+	// is the unfalsifiable assertion this seam exists to prevent, so the
+	// reporter is resolved when the assertion is made, not when the process
+	// was run. TestAssertionsOnAResultSurviveACapturedRegion pins it.
+	w    *World
 	Args []string
 	// Env is the environment the process was run with, as name=value strings.
 	Env      []string
@@ -724,28 +750,40 @@ func (r Result) invocation() string { return "mackup " + strings.Join(r.Args, " 
 
 // ExpectExit asserts the process exit code.
 func (r Result) ExpectExit(code int) Result {
-	r.t.Helper()
+	r.w.t.Helper()
 	if r.ExitCode != code {
-		r.t.Errorf("%s exited %d, want %d\nstdout: %q\nstderr: %q", r.invocation(), r.ExitCode, code, r.Stdout, r.Stderr)
+		r.w.t.Errorf("%s exited %d, want %d\nstdout: %q\nstderr: %q", r.invocation(), r.ExitCode, code, r.Stdout, r.Stderr)
 	}
 	return r
 }
 
 // ExpectStdout asserts stdout contains want. appspec/07 makes the stream a
 // message lands on contract, so every message assertion names its stream.
+// ExpectFailureExit asserts the process failed, without saying how. For a
+// condition the spec gives an exit code, use ExpectExit; this is for the ones
+// it leaves to the implementation, where pinning the number would fail a
+// conformant program for making a different choice.
+func (r Result) ExpectFailureExit() Result {
+	r.w.t.Helper()
+	if r.ExitCode == 0 {
+		r.w.t.Errorf("%s: exit = 0, want a non-zero code: the run did not complete the action asked of it", r.invocation())
+	}
+	return r
+}
+
 func (r Result) ExpectStdout(want string) Result {
-	r.t.Helper()
+	r.w.t.Helper()
 	if !strings.Contains(r.Stdout, want) {
-		r.t.Errorf("%s stdout does not contain %q\nstdout: %q", r.invocation(), want, r.Stdout)
+		r.w.t.Errorf("%s stdout does not contain %q\nstdout: %q", r.invocation(), want, r.Stdout)
 	}
 	return r
 }
 
 // ExpectStderr asserts stderr contains want.
 func (r Result) ExpectStderr(want string) Result {
-	r.t.Helper()
+	r.w.t.Helper()
 	if !strings.Contains(r.Stderr, want) {
-		r.t.Errorf("%s stderr does not contain %q\nstderr: %q", r.invocation(), want, r.Stderr)
+		r.w.t.Errorf("%s stderr does not contain %q\nstderr: %q", r.invocation(), want, r.Stderr)
 	}
 	return r
 }
@@ -755,9 +793,9 @@ func (r Result) ExpectStderr(want string) Result {
 // show something and does not say where -- pinning a stream there would fail a
 // conforming implementation over a promise the spec declines to make.
 func (r Result) ExpectEitherStream(want string) Result {
-	r.t.Helper()
+	r.w.t.Helper()
 	if !strings.Contains(r.Stdout, want) && !strings.Contains(r.Stderr, want) {
-		r.t.Errorf("%s: neither stream contains %q\nstdout: %q\nstderr: %q", r.invocation(), want, r.Stdout, r.Stderr)
+		r.w.t.Errorf("%s: neither stream contains %q\nstdout: %q\nstderr: %q", r.invocation(), want, r.Stdout, r.Stderr)
 	}
 	return r
 }
@@ -765,9 +803,9 @@ func (r Result) ExpectEitherStream(want string) Result {
 // ExpectStderrLine asserts stderr is exactly one line, equal to want. Used for
 // the literal contract tokens of appspec/07.
 func (r Result) ExpectStderrLine(want string) Result {
-	r.t.Helper()
+	r.w.t.Helper()
 	if r.Stderr != want+"\n" {
-		r.t.Errorf("%s stderr = %q, want exactly %q", r.invocation(), r.Stderr, want+"\n")
+		r.w.t.Errorf("%s stderr = %q, want exactly %q", r.invocation(), r.Stderr, want+"\n")
 	}
 	return r
 }
@@ -775,9 +813,9 @@ func (r Result) ExpectStderrLine(want string) Result {
 // ExpectSilentStdout asserts nothing was written to stdout. Both config-failure
 // regimes of appspec/01 section 6 share the post-condition "no stdout".
 func (r Result) ExpectSilentStdout() Result {
-	r.t.Helper()
+	r.w.t.Helper()
 	if r.Stdout != "" {
-		r.t.Errorf("%s wrote to stdout, want nothing\nstdout: %q", r.invocation(), r.Stdout)
+		r.w.t.Errorf("%s wrote to stdout, want nothing\nstdout: %q", r.invocation(), r.Stdout)
 	}
 	return r
 }
@@ -792,7 +830,7 @@ func (r Result) ExpectSilentStdout() Result {
 // the case claims. Each use is replaced by an assertion on the command's real
 // behavior as that command's ticket lands.
 func (r Result) ExpectNotImplemented(cmd string) Result {
-	r.t.Helper()
+	r.w.t.Helper()
 	return r.ExpectExit(1).
 		ExpectStderrLine("Error: " + cmd + " is not implemented yet.").
 		ExpectSilentStdout()
@@ -800,9 +838,9 @@ func (r Result) ExpectNotImplemented(cmd string) Result {
 
 // ExpectSilentStderr asserts nothing was written to stderr.
 func (r Result) ExpectSilentStderr() Result {
-	r.t.Helper()
+	r.w.t.Helper()
 	if r.Stderr != "" {
-		r.t.Errorf("%s wrote to stderr, want nothing\nstderr: %q", r.invocation(), r.Stderr)
+		r.w.t.Errorf("%s wrote to stderr, want nothing\nstderr: %q", r.invocation(), r.Stderr)
 	}
 	return r
 }

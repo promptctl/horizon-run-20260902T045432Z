@@ -205,6 +205,27 @@ func TestFormsMatchingNoUsageLineAreUsageErrors(t *testing.T) {
 		"missing config-file argument":    {"list", "--config-file"},
 		"a bare double dash is not a key": {"--", "list"},
 	}
+	// The exit code is deliberately not pinned, and the streams deliberately
+	// are. appspec/07 says in as many words that stderr carries "argument-
+	// parser usage and warning text on a usage error", so the stream and the
+	// silent stdout are contract. The number is not: appspec/07's error table
+	// gives exit 1 to an enumerated list of fatal conditions and a usage error
+	// is not among them, and appspec/02 says of the one parser exit code it
+	// does record that "matching the exact exit code here is not load-bearing
+	// for callers". A reimplementation using the conventional 2 -- which is
+	// what the reference's own argparse does -- breaks nothing and must not
+	// fail here.
+	//
+	// Non-zero is still asserted, and is not a token gesture: appspec/07 has
+	// a supervisor "detecting failure" read the exit code, and exit 0 would
+	// make these forms indistinguishable from the successful run appspec/02's
+	// table defines 0 as. That this implementation answers 1 is its own
+	// choice, pinned where a choice belongs -- internal/app's
+	// TestUnrecognizedSubcommandWarnsThenPrintsUsageOnStderr and
+	// TestShowWithoutApplicationIsAUsageError, both of which assert
+	// ExitFailure. This is the same line TestABareInvocationShowsUsage draws;
+	// this table was on the wrong side of it.
+	//
 	// {"show", "-"} was here and is deliberately gone. appspec/02 never
 	// mentions a bare "-": its grammar is `show <application>`, which as a
 	// grammar accepts any token, and the spec's own parser-behavior section
@@ -222,7 +243,7 @@ func TestFormsMatchingNoUsageLineAreUsageErrors(t *testing.T) {
 			before := world.Snapshot()
 
 			world.Run(args...).
-				ExpectExit(1).
+				ExpectFailureExit().
 				ExpectStderr(usageMarker).
 				ExpectSilentStdout()
 
@@ -323,6 +344,18 @@ func TestTheHarnessIsolatesTheProgramFromTheDeveloperEnvironment(t *testing.T) {
 		if value, ok := environment[name]; ok {
 			t.Errorf("%s leaked from the developer environment into the program's, as %q", name, value)
 		}
+	}
+
+	// TMPDIR has to land inside the root or the snapshot is not watching the
+	// whole world: a temporary file written through os.TempDir -- an atomic
+	// copy is the ordinary way to implement appspec/01 section 3 -- would go
+	// to the system temp directory, outside everything ExpectUnchanged walks,
+	// and "changed nothing" would hold over a run that wrote.
+	tmp, ok := environment["TMPDIR"]
+	if !ok {
+		t.Error("the program's environment has no TMPDIR, so anything it writes through os.TempDir lands outside the scratch root and outside every filesystem assertion in this suite")
+	} else if relative, err := filepath.Rel(world.Root, tmp); err != nil || strings.HasPrefix(relative, "..") {
+		t.Errorf("TMPDIR in the program's environment = %q, which is outside the scratch root %q", tmp, world.Root)
 	}
 }
 
@@ -454,6 +487,28 @@ func TestTheReaperFindsDirectoriesUnderAPathHoldingAGlobMetacharacter(t *testing
 	}
 	if _, err := os.Lstat(bystander); err != nil {
 		t.Errorf("%s does not carry the suite's prefix and should not have been touched: %v", filepath.Base(bystander), err)
+	}
+}
+
+func TestAssertionsOnAResultSurviveACapturedRegion(t *testing.T) {
+	// captureReport swaps the world's reporter for the duration of a call.
+	// A Result that had copied the reporter when the process ran would keep
+	// the recorder after the capture ended, and every assertion made on it
+	// afterwards would report into an object nobody reads -- green whatever
+	// the program did. No case is written that way today; this is what stops
+	// the next one, since the failure leaves no trace at all.
+	world := NewWorld(t)
+
+	var got Result
+	if reported := world.captureReport(t, func() { got = world.Run("--help") }); len(reported) != 0 {
+		t.Fatalf("running --help inside a capture reported %v; this case needs a clean run to assert on", reported)
+	}
+
+	// A deliberately wrong expectation, outside the capture that produced the
+	// Result. It has to be heard.
+	reported := world.captureReport(t, func() { got.ExpectExit(99) })
+	if len(reported) == 0 {
+		t.Error("an assertion on a Result produced inside a captured region reported nothing; the Result is still reporting into the recorder that region used, so every assertion made on it is silently discarded")
 	}
 }
 
