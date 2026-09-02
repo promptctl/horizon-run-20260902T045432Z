@@ -35,9 +35,16 @@ build:
 # harness_test.go's header exist to prevent. Do not delete them as dead code,
 # and do not read them as the reason the package is absent.
 #
-# An empty package list would make `go test` fall through to the current
-# directory and report success having run nothing, so the list is checked
-# before it is used.
+# An empty package list is checked for before it is used. The reason recorded
+# here was wrong and is corrected rather than deleted: it claimed `go test`
+# would "fall through to the current directory and report success having run
+# nothing". It does fall through to the current directory, but at THIS module
+# root that exits 1 with "no Go files in <root>" -- verified, rc=1 -- so an
+# empty list fails today rather than passing. What the guard buys is a message
+# that names the cause, and cover for a tree that later grows a package at the
+# module root, where the fall-through would silently test that one package
+# instead of all of them. That is a weaker warrant than the gofmt guard below,
+# whose stated hazard is real and immediate, and the two are not equivalent.
 #
 # go list runs on its own line because a pipeline reports the exit status of
 # its LAST command: written as `go list ./... | grep -v ...`, a go list that
@@ -93,7 +100,7 @@ vet:
 # variable so that each target keeps its own guard on find's exit status; the
 # thing to avoid is one of them drifting, so change both.
 fmt:
-	@files="$$(find ./cmd ./internal ./test -name testdata -prune -o -name '*.go' -print)" || { echo "make: find failed" >&2; exit 1; }; \
+	@files="$$(find . -name .git -prune -o -name testdata -prune -o -name '*.go' -print)" || { echo "make: find failed" >&2; exit 1; }; \
 		test -n "$$files" || { echo "make: found no Go files to format" >&2; exit 1; }; \
 		gofmt -l -w $$files
 
@@ -129,6 +136,11 @@ fmt:
 # one of these directories would have turned the formatting check off and left
 # the gate green.
 #
+# The whole module is searched rather than ./cmd ./internal ./test, for the
+# reason TestEveryDocCommentNamesWhatItDocuments now walks the module root: a
+# renamed directory failed loudly, but a NEW top-level package silently escaped
+# the formatting gate. .git is pruned because it is history, not source.
+#
 # testdata is excluded, for the reason `go build` excludes it: nothing under it
 # is part of the build, so it is where a package keeps fixtures that are
 # deliberately not valid Go. `gofmt -l` does not skip testdata on its own --
@@ -144,7 +156,7 @@ fmt:
 # reads STDIN, so a find that matched nothing would hang the gate rather than
 # fail it. Verified.
 check: vet test
-	@files="$$(find ./cmd ./internal ./test -name testdata -prune -o -name '*.go' -print)" || { echo "make: find failed" >&2; exit 1; }; \
+	@files="$$(find . -name .git -prune -o -name testdata -prune -o -name '*.go' -print)" || { echo "make: find failed" >&2; exit 1; }; \
 		test -n "$$files" || { echo "make: found no Go files to format-check" >&2; exit 1; }; \
 		unformatted="$$(gofmt -l $$files)" || { echo "make: gofmt failed" >&2; exit 1; }; \
 		test -z "$$unformatted" || { echo "gofmt needed:"; printf '%s\n' "$$unformatted"; exit 1; }

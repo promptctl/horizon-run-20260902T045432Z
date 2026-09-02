@@ -509,6 +509,54 @@ func TestAVariableTheWorldSetsReachesTheProgram(t *testing.T) {
 	}
 }
 
+func TestTheSnapshotRecordsASymlinkByItsTargetWithoutFollowingIt(t *testing.T) {
+	// A harness case, like the FIFO one in harness_unix_test.go: it pins a
+	// field of the snapshot record that every ExpectUnchanged in the suite
+	// rests on.
+	//
+	// The target IS the content of a symlink. Nothing else in the record
+	// separates a link pointing at one file from a link pointing at another --
+	// the permission bits are identical and no size is recorded -- so a
+	// snapshot that dropped it reports "unchanged" over a re-pointed link.
+	// appspec/05's link engine replaces a dotfile with a symlink into the
+	// Mackup folder, and both the dry-run and the rejected-run post-conditions
+	// there are "no filesystem change", asserted with ExpectUnchanged.
+	//
+	// Pinned by reading the field rather than by re-pointing the link, and
+	// that is the whole point of the case. Re-pointing means removing and
+	// recreating, which moves the link's own mtime, so the mtime field alone
+	// would report the change and the target would stay unproven -- the
+	// vacuous-pass shape this suite keeps finding one level over from where it
+	// last looked. Reading the field is what makes the battery's "the symlink
+	// target is not recorded" entry fail; before this case existed, replacing
+	// os.Readlink with a constant left the whole gate green.
+	world := NewWorld(t)
+	world.WriteFile("real.txt", "the target's own bytes", 0o600)
+	link := world.Path("link")
+	if err := os.Symlink("real.txt", link); err != nil {
+		t.Fatalf("creating a symlink at %s: %v", link, err)
+	}
+
+	snapshot := world.Snapshot()
+	key := world.SnapshotKey("link")
+	got, ok := snapshot[key]
+	if !ok {
+		t.Fatalf("snapshot has no entry for %s; it holds %v", key, snapshotPaths(snapshot))
+	}
+	if !strings.HasPrefix(got, "symlink ") {
+		t.Errorf("snapshot recorded %s as %q, want it to begin with %q", key, got, "symlink ")
+	}
+	if want := "-> real.txt"; !strings.HasSuffix(got, want) {
+		t.Errorf("snapshot recorded %s as %q, want it to end with %q; without the target a re-pointed link is indistinguishable from an untouched one", key, got, want)
+	}
+	// Lstat, not Stat: a snapshot that followed the link would record the
+	// target's bytes here and then report a phantom change on every run that
+	// touched the target rather than the link.
+	if strings.Contains(got, "the target's own bytes") {
+		t.Errorf("snapshot recorded %s as %q; it followed the link and read the target rather than recording the link itself", key, got)
+	}
+}
+
 func TestTheSnapshotWatchesTheWholeScratchRoot(t *testing.T) {
 	// A "changed nothing" assertion is only as wide as what the snapshot
 	// walks. appspec/04's file_system engine takes an arbitrary path, so the
@@ -685,9 +733,22 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 		t.Fatalf("locating the module root: %v", err)
 	}
 
+	// The whole module, not a list of directories the program is believed to
+	// live in. The list was cmd, internal and test, and a RENAME of one of
+	// those failed loudly (WalkDir errors into the Fatalf below) while an
+	// ADDITION was silent: a new top-level package escaped this guard
+	// entirely, and the checked == 0 backstop could not fire because the
+	// three surviving directories still held documented declarations. That is
+	// the same narrowing readImplementationSources refuses forty lines away in
+	// harness_test.go -- "never narrow the walk back to a guess at where the
+	// program lives" -- and it was being made here at the same time.
+	//
+	// The skips mirror that walk's, for its reasons: .git is history at
+	// whatever depth it appears, and bin is skipped only at the module root
+	// because that is the one the Makefile writes.
 	checked := 0
-	for _, dir := range []string{"cmd", "internal", "test"} {
-		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, entry fs.DirEntry, err error) error {
+	{
+		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
@@ -706,12 +767,13 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 			// needed; neither is sufficient. Verified by putting the fixture
 			// in and running each half with the other half's fix reverted.
 			//
-			// What this does NOT skip, deliberately: directories whose names
-			// begin with "_" or ".", which `go build` also ignores. None
-			// exists under cmd, internal or test, and a tree that grows one
-			// gets a loud failure here rather than a silent gap.
+			// What this does NOT skip, deliberately: vendor, and directories
+			// whose names begin with "_" or "." other than .git, all of which
+			// `go build` also ignores. None exists in this module, and a tree
+			// that grows one gets a loud failure here rather than a silent
+			// gap -- the direction this suite errs in everywhere else.
 			if entry.IsDir() {
-				if entry.Name() == "testdata" {
+				if entry.Name() == "testdata" || entry.Name() == ".git" || path == filepath.Join(root, "bin") {
 					return filepath.SkipDir
 				}
 				return nil
@@ -817,7 +879,7 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 			return nil
 		})
 		if err != nil {
-			t.Fatalf("walking %s: %v", dir, err)
+			t.Fatalf("walking the module root: %v", err)
 		}
 	}
 

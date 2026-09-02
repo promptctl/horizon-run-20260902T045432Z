@@ -51,7 +51,14 @@ H = "test/conformance/harness_test.go"
 U = "internal/cli/usage.go"
 D = "internal/app/dispatch.go"
 A = "internal/app/app.go"
-X = "test/conformance/harness_unix_test.go"
+# No constant for test/conformance/harness_unix_test.go, and no mutation edits
+# it. That file is a safety net over Snapshot -- a bounded call, a recording
+# reporter, a timeout arm -- and a net is only observable when the thing it
+# catches misbehaves, so it is exercised by injecting into Snapshot rather than
+# into itself. "the FIFO guard is removed" drives its bound and timeout arm end
+# to end; "Snapshot complains instead of failing" drives its recorder branch.
+# Both of those had never executed in this tree before those entries existed.
+# It stays in FILES anyway, so an entry that does edit it later is backed up.
 P = "internal/cli/parse.go"
 V = "internal/version/version.go"
 
@@ -69,6 +76,16 @@ def repl(f, old, new):
 
 def tail(f, marker, new):
     return ("tail", f, marker, new)
+
+def cut(f, start, end):
+    """Remove everything from `start` up to, but not including, `end`.
+
+    For deleting a whole switch arm or block. Replacing the BODY of an arm and
+    calling it deleted is what left the FIFO branch standing while its entry
+    reported a kill, so the shape that removes the arm itself has its own kind
+    rather than a hand-written repl each time.
+    """
+    return ("cut", f, start, end)
 
 MUTATIONS = [
  ("ExpectUnchanged gutted", [tail(H, "func (w *World) ExpectUnchanged(before Snapshot) {",
@@ -204,6 +221,36 @@ MUTATIONS = [
    "// Regression for the round-9 argv scan bug.\nfunc TestOrdinaryComment(t *testing.T) {}\n\n// moduleRoot is the directory holding go.mod, found by walking up from the")],
    SURVIVES),
 
+ ("the symlink target is not recorded", [repl(H,
+   '\t\t\ttarget, err := os.Readlink(path)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n',
+   '\t\t\ttarget := "constant"\n\t\t\t_ = os.Readlink\n')],
+   'want it to end with "-> real.txt"'),
+
+ # Removes the arm, not its body. An earlier entry replaced the body and so
+ # left the branch itself standing, which is why the 30s bound, the recording
+ # reporter and the timeout arm in harness_unix_test.go had never once
+ # executed. This is the defect that whole file exists for: Snapshot opens a
+ # FIFO nobody is writing to and BLOCKS, and the kill is the bound firing.
+ # Slow on purpose -- it takes the full 30s -- and the only entry that does.
+ ("the FIFO guard is removed", [cut(H,
+   "\t\tcase !info.Mode().IsRegular():", "\t\tdefault:")],
+   'so it blocked rather than failed'),
+
+ ("Snapshot complains instead of failing", [repl(H,
+   '\t\t\tsnapshot[relative] = fmt.Sprintf("%s %04o @%d", info.Mode().Type(), info.Mode().Perm(), stamp)',
+   '\t\t\tw.t.Errorf("snapshot: unexpected file type at %s", relative)\n\t\t\tsnapshot[relative] = fmt.Sprintf("%s %04o @%d", info.Mode().Type(), info.Mode().Perm(), stamp)')],
+   'the snapshot returned but reported'),
+
+ # readImplementationSources is the rig's primary cache-honesty mechanism and
+ # the one harness_test.go's header says must never be lost, and nothing
+ # injected at it. Both of its recorded past failures are injectable: the walk
+ # narrowed back to a guess at where the program lives, and the call moved out
+ # of a case to where cmd/go does not record its reads.
+ ("the source walk is narrowed to internal", [repl(H,
+   "\tread := map[string]bool{}",
+   '\troot = filepath.Join(root, "internal")\n\tread := map[string]bool{}')],
+   "so the cache key does not track the program"),
+
  ("the version banner gains a suffix", [repl(V,
    'return "Mackup " + String()', 'return "Mackup " + String() + "-extra"')],
    None),
@@ -224,8 +271,23 @@ def restore():
     for f in FILES:
         shutil.copyfile(os.path.join(BACKUP, f), os.path.join(REPO, f))
 
+# Bounded, because one entry below injects a defect whose whole signature is
+# that the suite BLOCKS -- the FIFO guard removed -- and it is killed by the
+# harness's own 30s bound firing. If a later change breaks that bound, the
+# unbounded form hung the battery itself rather than reporting the entry, and
+# an overnight run came back with nothing. The bound here is far above any
+# honest gate run; it exists to turn a hang into a result.
+RUN_BOUND = 900
+
 def run(cmd):
-    p = subprocess.run(cmd, shell=True, cwd=REPO, capture_output=True, text=True)
+    try:
+        p = subprocess.run(cmd, shell=True, cwd=REPO, capture_output=True, text=True,
+                           timeout=RUN_BOUND)
+    except subprocess.TimeoutExpired as expired:
+        out = (expired.stdout or b"") if isinstance(expired.stdout, bytes) else (expired.stdout or "")
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", "replace")
+        return 124, out + "\nbattery: %r did not finish within %ds" % (cmd, RUN_BOUND)
     return p.returncode, p.stdout + p.stderr
 
 def apply(edits):
@@ -238,6 +300,15 @@ def apply(edits):
             if n != 1:
                 return None, "anchor %r occurs %d times in %s" % (a[:60], n, f)
             src = src.replace(a, b)
+        elif kind == "cut":
+            n = src.count(a)
+            if n != 1:
+                return None, "cut start %r occurs %d times in %s" % (a[:60], n, f)
+            i = src.find(a)
+            j = src.find(b, i)
+            if j < 0:
+                return None, "cut end %r not found after the start in %s" % (b[:60], f)
+            src = src[:i] + src[j:]
         else:
             i = src.find(a)
             if i < 0:
