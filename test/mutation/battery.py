@@ -988,6 +988,85 @@ MUTATIONS = [
   [repl(EN, '"%d applications supported in Mackup v%s", len(keys), version.String()',
             '"%d applications supported in Mackup v%s", 614, version.String()')],
   "FAIL: TestADroppedDefinitionAppearsInListAndIncrementsTheCount"),
+
+ # --- appspec/06 sync primitives (macklebox-copy-sync-dpz.1) ----------------
+ #
+ # DELIBERATELY EMPTY, and this banner is the entry that is owed. internal/syncfs
+ # ships with copy, delete, link, the recursive 0600/0700 clamp, the attribute
+ # cleanup, LinkState and the already-linked predicate -- and NOTHING CALLS IT
+ # YET. dispatch's backup, restore and three link arms still report "not
+ # implemented", so the conformance suite cannot observe a single one of those
+ # primitives, and every entry written here today would be killed by
+ # internal/syncfs's unit tests and then reported RIG-BLIND by the `make
+ # conformance` step below -- which is the accurate verdict, not a false alarm.
+ # Same call as the appspec/07 reset-safety deferral above, for the same reason.
+ #
+ # The work is not skipped, only parked. Each mutation below was injected into a
+ # copy of the tree and the killing case recorded, so the entries can be
+ # transcribed rather than re-derived once macklebox-copy-sync-dpz.3 wires
+ # backup and restore to these primitives and gives the rig something to watch.
+ # Add internal/syncfs/{syncfs,state,attributes}.go to FILES at the same time --
+ # they are absent from it on purpose, since a file in FILES that no mutation
+ # edits is only backed up and restored for nothing.
+ #
+ #   the parents of a destination are clamped too         parentMode 0o777 -> 0o700
+ #       TestCopyCreatesMissingParentsWithoutClampingThem
+ #   copy does not clamp the destination                  Copy's trailing Clamp(dst) -> nil
+ #       TestAnExistingDestinationFileIsClampedTooNotJustANewOne
+ #   the clamp does not recurse                           Clamp's clampTree(path) -> nil
+ #       TestLinkClampsItsTargetBeforeCreatingTheLink
+ #   the clamp gives regular files the directory mode     clampTree's fileMode -> dirMode
+ #       TestACopiedDirectoryTreeIsClamped0700And0600Recursively
+ #   the clamp fails on a broken symlink                  clampTree's ModeSymlink skip removed
+ #       TestClampSkipsABrokenSymlinkInsteadOfFailing
+ #   the clamp descends through symlinked directories     clampTree recurses on EvalSymlinks
+ #       TestClampDoesNotDescendThroughASymlinkedDirectory
+ #   link clamps after creating the link                  Link's Clamp/Symlink order swapped
+ #       TestLinkClampsItsTargetBeforeCreatingTheLink
+ #   the link records a relative target                   Link symlinks filepath.Rel(...)
+ #       TestLinkPointsAtTheTargetItWasGivenAndCreatesMissingParents
+ #   a directory copy clears the destination first        copyTree gains os.RemoveAll(dst)
+ #       TestCopyMergesIntoAnExistingDestinationDirectory
+ #   a directory copy does not recurse                    copyTree's IsDir arm -> nil
+ #       TestACopiedDirectoryTreeIsClamped0700And0600Recursively
+ #   a directory copy stops at a symlinked directory      copyTree's IsDir arm gains a
+ #                                                        ModeSymlink guard
+ #       TestCopyDescendsIntoASymlinkedDirectoryInsideTheSourceTree
+ #   the copy classifies with Lstat                       Copy's os.Stat(src) -> os.Lstat(src)
+ #       TestCopyFollowsASymlinkedSourceAndWritesARealFile
+ #   delete of an absent path is an error                 Delete's IsNotExist arm removed
+ #       TestDeletingAPathThatIsNotThereSucceeds
+ #   delete strips attributes after removing the path     Delete's cleanAttributes deferred
+ #       TestDeleteStripsAttributesWhileThePathIsStillThere
+ #   clamp strips attributes after changing the mode      Clamp's cleanAttributes deferred
+ #       TestClampStripsAttributesBeforeItChangesTheMode
+ #   attributes are never stripped                        cleanAttributes' loop removed
+ #       TestDeleteStripsAttributesWhileThePathIsStillThere
+ #   the platform cleanup tables are swapped              darwin's and linux's argv exchanged
+ #       TestTheCleanupCommandsAreTheOnesAppspec06NamesForEachPlatform
+ #   the predicate accepts any live home symlink          AlreadyLinked's SameFile -> true
+ #       TestTheAlreadyLinkedPredicateIsTrueOnlyForALiveLinkToTheMackupCopy
+ #   the predicate compares link text instead of identity SameFile -> Readlink ==
+ #       TestTheLinkedAnswerSurvivesAStorageRootReachedThroughASymlink
+ #   StateOf never reports mackup-only                    StateOf's mackup stat removed
+ #       TestEveryArrangementDerivesTheStateAppspec06NamesForIt
+ #   StateOf calls a dangling link a real file            StateOf's broken-link arm removed
+ #       TestADanglingHomeSymlinkReadsAsNotLinkedRatherThanRaising
+ #
+ # Three mutations were injected and are NOT listed, because they survived and
+ # deserve to: each is behaviour-preserving, so an entry for it would be a
+ # standing false alarm rather than a hole. Recorded so the next reader does not
+ # rediscover them and "fix" the tests to catch what is not there.
+ #
+ #   * Dropping either existence check from AlreadyLinked. os.SameFile is false
+ #     when handed the nil FileInfo a failed stat leaves, so both are implied by
+ #     the comparison that follows them.
+ #   * Delete's os.Lstat -> os.Stat. os.Remove unlinks a symlink and
+ #     os.RemoveAll begins with an os.Remove that succeeds on one, so a symlink
+ #     to a non-empty directory is unlinked either way and its target survives.
+ #     Verified directly, not reasoned about.
+ #   * Removing runCleanupCommand's os.Stat guard. exec's own ENOENT is
+ #     discarded to the same effect. Both files carry a comment saying so.
 ]
 
 
