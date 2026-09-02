@@ -363,11 +363,22 @@ func keepBuildDirFresh(dir string) {
 // directory. Sweeping the real TMPDIR from a case would race every other
 // conformance run on the machine, including a concurrent one of this suite.
 func reapAbandonedBuildDirectories(within string) {
-	matches, err := filepath.Glob(filepath.Join(within, buildDirPrefix+"*"))
+	// ReadDir and a prefix test rather than filepath.Glob: Glob would read
+	// the directory's own path as pattern text, so a TMPDIR holding a glob
+	// metacharacter breaks the sweep silently and permanently. Observed: with
+	// a directory literally named "tmp[1]", Glob matches nothing at all --
+	// "[1]" is a character class -- while ReadDir finds the entry; an
+	// unterminated "[" returns ErrBadPattern into the return above. Every
+	// error here is swallowed by design, so there would be no signal.
+	entries, err := os.ReadDir(within)
 	if err != nil {
 		return
 	}
-	for _, path := range matches {
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), buildDirPrefix) {
+			continue
+		}
+		path := filepath.Join(within, entry.Name())
 		// Lstat, not Stat: the decision is about this entry, and RemoveAll
 		// below unlinks a symlink rather than following it, so a Stat judges
 		// one object and acts on another. The consequence
@@ -389,6 +400,20 @@ func reapAbandonedBuildDirectories(within string) {
 // requireVCSStampedBuild returns the binary built with VCS stamping forced on.
 // Under CI a missing one is a failure; elsewhere the case skips, so that a
 // degraded run is visible rather than green.
+//
+// The CI failure is deliberate for EVERY reason the build is missing, the
+// benign-sounding one included, and a review has already read that as
+// overreach once. `go build -buildvcs=true` in a tree with no repository does
+// not fail: it exits 0 and stamps nothing (verified on go1.25.7 against a
+// copy of this tree with no .git), so buildForcingVCSStamp reports "carries no
+// vcs.revision setting" and this fatals. Skipping that case under CI instead
+// would be backwards. A CI checkout that has stopped carrying .git -- a
+// container COPY without it, a checkout action misconfigured -- is exactly the
+// degradation this escalation exists to surface, and it is far likelier there
+// than the tarball-with-CI=true reading that motivates the skip. Failing costs
+// a red build whose message names the cause precisely; skipping costs the
+// pseudo-version half of the provenance contract, silently, in the one
+// environment nobody is watching a skip in.
 func requireVCSStampedBuild(t *testing.T) string {
 	t.Helper()
 	if mackupVCSBin != "" {

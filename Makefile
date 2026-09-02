@@ -101,8 +101,17 @@ fmt:
 # and a `make check` after it reports Mackup unknown -- shipping the gate's
 # binary rather than the release. The default path is built in CI instead,
 # where the checkout is fresh and there is nothing to clobber.
+# The gofmt status is checked, not just its output -- the same defect the test
+# target's go list guard describes, in the other direction. `gofmt -l` writes
+# its diagnostics to stderr and nothing to stdout when it fails, so the old
+# `test -z "$$(gofmt -l ...)"` spelling passed on a gofmt that had not
+# formatted anything: verified with `gofmt -l ./cmd ./internal ./nope`, which
+# exits 2 with empty stdout and satisfied the guard. A later ticket renaming
+# one of these directories would have turned the formatting check off and left
+# the gate green.
 check: vet test
-	@test -z "$$(gofmt -l ./cmd ./internal ./test)" || { echo "gofmt needed:"; gofmt -l ./cmd ./internal ./test; exit 1; }
+	@unformatted="$$(gofmt -l ./cmd ./internal ./test)" || { echo "make: gofmt failed" >&2; exit 1; }; \
+		test -z "$$unformatted" || { echo "gofmt needed:"; printf '%s\n' "$$unformatted"; exit 1; }
 
 clean:
 	rm -rf bin

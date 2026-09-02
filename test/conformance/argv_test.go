@@ -418,6 +418,45 @@ func TestTheReaperJudgesTheEntryItRemoves(t *testing.T) {
 	}
 }
 
+func TestTheReaperFindsDirectoriesUnderAPathHoldingAGlobMetacharacter(t *testing.T) {
+	// The sweep used filepath.Glob, which reads the directory's own path as
+	// pattern text rather than as a literal path. A TMPDIR holding "[", "*"
+	// or "?" -- a developer's, or a runner's -- then reclaimed nothing, for
+	// good, with no signal: every error in the sweep is swallowed by design.
+	within := filepath.Join(t.TempDir(), "tmp[1]")
+	if err := os.Mkdir(within, 0o700); err != nil {
+		t.Fatalf("creating %s: %v", within, err)
+	}
+
+	abandoned := filepath.Join(within, buildDirPrefix+"abandoned")
+	if err := os.Mkdir(abandoned, 0o700); err != nil {
+		t.Fatalf("creating %s: %v", abandoned, err)
+	}
+	stale := time.Now().Add(-2 * buildDirAbandonedAfter)
+	if err := os.Chtimes(abandoned, stale, stale); err != nil {
+		t.Fatalf("ageing %s: %v", abandoned, err)
+	}
+
+	// Not named with the prefix, so it must survive: this is what keeps the
+	// case honest about a sweep that simply removed everything it found.
+	bystander := filepath.Join(within, "not-ours")
+	if err := os.Mkdir(bystander, 0o700); err != nil {
+		t.Fatalf("creating %s: %v", bystander, err)
+	}
+	if err := os.Chtimes(bystander, stale, stale); err != nil {
+		t.Fatalf("ageing %s: %v", bystander, err)
+	}
+
+	reapAbandonedBuildDirectories(within)
+
+	if _, err := os.Lstat(abandoned); !os.IsNotExist(err) {
+		t.Errorf("%s is stale and named with the suite's prefix but survived a sweep of %s (lstat error: %v)", filepath.Base(abandoned), filepath.Base(within), err)
+	}
+	if _, err := os.Lstat(bystander); err != nil {
+		t.Errorf("%s does not carry the suite's prefix and should not have been touched: %v", filepath.Base(bystander), err)
+	}
+}
+
 func TestExpectUnchangedReportsEveryShapeOfChange(t *testing.T) {
 	// Six cases carry the spec promises no single command states -- --help
 	// touches nothing (appspec/02), a rejected run leaves the filesystem
