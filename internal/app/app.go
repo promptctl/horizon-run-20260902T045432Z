@@ -6,8 +6,10 @@ package app
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/promptctl/macklebox/internal/cli"
+	"github.com/promptctl/macklebox/internal/fault"
 	"github.com/promptctl/macklebox/internal/ui"
 	"github.com/promptctl/macklebox/internal/version"
 )
@@ -112,19 +114,37 @@ func runPipeline(inv cli.Invocation, streams *ui.IO) int {
 	// Step 2: resolve the user config, which eagerly resolves the storage
 	// location. Step 3: assemble the application database. Step 4/5: the
 	// environment-gate lattice (root guard, storage root, Mackup folder).
-	if err := loadConfig(inv); err != nil {
-		streams.Sayf(ui.Fatal, "Error: %s", err)
-		return ExitFailure
+	cfg, err := loadConfig(inv)
+	if err != nil {
+		return reportFatal(streams, err)
 	}
 	if err := assembleApplicationDatabase(inv); err != nil {
-		streams.Sayf(ui.Fatal, "Error: %s", err)
-		return ExitFailure
+		return reportFatal(streams, err)
 	}
-	if err := environmentGate(inv); err != nil {
-		streams.Sayf(ui.Fatal, "Error: %s", err)
-		return ExitFailure
+	if err := environmentGate(inv, cfg); err != nil {
+		return reportFatal(streams, err)
 	}
 
 	// Step 6: dispatch to the requested subcommand.
 	return dispatch(inv, streams)
+}
+
+// reportFatal writes a startup failure's diagnostic to stderr and reports the
+// exit code.
+//
+// One line per Say call, because appspec/07 promises that "every colored
+// string is terminated with a reset" and two of the guarded rows in its error
+// table -- the legacy-config refusal and "Unable to find your <provider> =("
+// -- are multi-line blocks. Colouring such a block as one string leaves its
+// middle lines opening a colour they never close, which is exactly what a
+// terminal carries into whatever prints next.
+//
+// The text itself comes from internal/fault, which is where appspec/07's
+// message shapes and appspec/01 section 6's two regimes are decided. This
+// function chooses neither; it routes.
+func reportFatal(streams *ui.IO, err error) int {
+	for _, line := range strings.Split(fault.Diagnostic(err), "\n") {
+		streams.Say(ui.Fatal, line)
+	}
+	return ExitFailure
 }

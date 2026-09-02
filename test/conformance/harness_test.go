@@ -977,6 +977,36 @@ func (w *World) WriteFile(relative, content string, perm fs.FileMode) string {
 	return path
 }
 
+// UseResolvableStorage gives the world a config file whose storage engine can
+// resolve, and returns the storage root it resolves to.
+//
+// appspec/02 makes config load a gate every subcommand passes -- "a run whose
+// configured (or default) engine cannot locate its storage folder fails at
+// load time ... regardless of which subcommand was requested" -- and a fresh
+// world has no config at all, so the default Dropbox engine finds nothing and
+// every subcommand dies before its own behavior is reached. A case about
+// anything past that gate has to get through it first.
+//
+// file_system is the engine used because it is the only one of the four that
+// resolves without a third-party sync client installed: appspec/04 gives it a
+// path the user supplies and, deliberately, no existence check. The directory
+// is created anyway, so the world also satisfies the storage-root existence
+// check of appspec/01 section 4 once that gate lands
+// (macklebox-resolvers-5iw.4) -- a case written now should not have to be
+// revisited then.
+//
+// Written to ~/.mackup.cfg, the first discovery candidate, so this helper does
+// not depend on any environment variable a case might also be setting.
+func (w *World) UseResolvableStorage() string {
+	w.t.Helper()
+	w.WriteFile(".mackup.cfg", "[storage]\nengine = file_system\npath = storage\n", 0o600)
+	root := w.Path("storage")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		w.t.Fatalf("creating the storage root: %v", err)
+	}
+	return root
+}
+
 // Run executes the command with no input available on stdin.
 func (w *World) Run(args ...string) Result { return w.RunWithInput("", args...) }
 

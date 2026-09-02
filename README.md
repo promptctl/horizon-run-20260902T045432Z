@@ -18,8 +18,14 @@ Specification complete; implementation in progress. Start at
 through altitudes (product contract → architecture → boundary detail).
 
 The command line boundary (invocation grammar, options, dispatch order, exit
-codes) is in place; the resolvers and sync operations behind it are not yet,
-and every subcommand reports itself as unimplemented.
+codes) is in place, and so are the two stages behind it: the built-in
+application catalog, and config discovery plus storage-location resolution. So
+every subcommand except `--help` and `--version` now reads your real
+`~/.mackup.cfg` and resolves your real storage location before it does
+anything else, and aborts there if either is wrong. The environment gate, the
+application database that layers the three definition directories, and the
+sync operations themselves are not yet — a subcommand that gets past the
+config still reports itself as unimplemented.
 
 ## Implementation
 
@@ -68,6 +74,56 @@ A definition with an empty file set is valid per `appspec/05` and still lists
 and shows, so a key whose paths are not yet authored is not a gap in
 conformance. File-set coverage grows by editing these files; the key set does
 not, and the parity test is what says so.
+
+### Config and storage resolution
+
+`internal/config/` is the second stage of the pipeline, and `appspec/02` puts
+every subcommand except `--help` and `--version` behind it: the config is
+loaded before dispatch, so a broken one aborts `list` and `show` too, even
+though those "otherwise touch no storage". It implements `appspec/03` —
+three-candidate discovery (`~/.mackup.cfg`, then `$MACKUP_CONFIG`, then the
+XDG candidate), the `-c/--config-file` override that skips discovery, the
+home-directory containment rule, the INI dialect the spec describes, the
+`[storage]` keys, and the refusal to run against a config still using the old
+section names.
+
+Resolution is **eager and total**. `Load` returns either a fully-resolved
+config or an error; there is no partially-resolved one, because `appspec/03`
+says that state cannot exist. The storage root is resolved as part of the
+load, which is why a machine with no Dropbox install fails at `list` rather
+than at the first file operation.
+
+`internal/storage/` holds the four engines of `appspec/04` behind one
+`Resolver` interface — `dropbox`, `google_drive`, `icloud`, `file_system` —
+with `Engine` a closed enum that can only be constructed by naming it, so an
+unknown `engine =` value is refused where the user wrote it rather than
+defaulting silently. `file_system` is the odd one out on purpose: it does
+**not** check that its path exists. `appspec/04` clause 2 says so, and tells a
+reimplementer not to "fix" it — the uniform existence guarantee belongs to the
+environment gate, and moving the message earlier would put it at the wrong
+stage. There is a test whose entire job is to fail if someone adds the stat.
+
+`internal/sqlite/` is a dependency-free, read-only reader for the one query
+`appspec/04` names for the `google_drive` engine. It is a reader, not a
+database: no SQL, no writing, no locking. It walks one table's b-tree —
+interior pages and the right-most child included — follows overflow chains,
+and decodes the record format. Its fixtures under `testdata/` were produced by
+real `sqlite3`, not by this package, because a fixture it generated itself
+would only prove it agrees with itself. It does **not** read a `-wal`
+sidecar, which is a named non-support in the package doc: an un-checkpointed
+Google Drive database reads as its last checkpointed state.
+
+`internal/fault/` carries the split `appspec/01` §6 and `appspec/02` draw
+between *guarded* failures — the conditions the spec gives a sentence for —
+and *unguarded* ones, the "uncaught config error" rows. Both spec sections
+**permit** collapsing the unguarded rows into clean exits; this program
+declines, because a distinction nothing can observe is not one. Guarded prints
+`Error: <the spec's sentence>` (or the bare multi-line block for the provider
+and legacy-config rows); unguarded prints `mackup: <text naming the offending
+value>`, which is what `appspec/02` asks of that regime. Both exit 1 —
+deliberately, since the reference exits 1 on an uncaught exception too, and a
+second exit code would be a contract this program invented. The reasoning is
+written out in `internal/fault/fault.go`; argue with it there.
 
 ### The conformance suite
 
@@ -133,6 +189,10 @@ fallback token `unknown` otherwise, per the spec's provenance rule.
 | `internal/cli/` | argv grammar, options, usage errors (`appspec/02`) |
 | `internal/app/` | The startup pipeline and subcommand dispatch (`appspec/01` §4) |
 | `internal/catalog/` | The built-in application definitions that ship with the program (`appspec/05`) |
+| `internal/config/` | Config discovery, the INI dialect, the application lists (`appspec/03`) |
+| `internal/storage/` | The four storage engines behind one resolver (`appspec/04`) |
+| `internal/sqlite/` | Read-only reader for the one `google_drive` query (`appspec/04`) |
+| `internal/fault/` | The guarded / unguarded failure regimes (`appspec/01` §6, `appspec/02`) |
 | `internal/ui/` | The two output streams (`appspec/07`) |
 | `internal/version/` | Version-string resolution (`appspec/00` provenance) |
 | `test/conformance/` | Black-box suite: runs the built command under a throwaway `HOME` |
