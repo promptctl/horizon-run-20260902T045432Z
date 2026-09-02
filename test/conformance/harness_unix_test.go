@@ -73,16 +73,19 @@ func snapshotWithinBound(t *testing.T, world *World) Snapshot {
 	done := make(chan Snapshot, 1)
 	// Snapshot reports its own errors through t, which the testing package
 	// requires be done from the goroutine running the case. It does that with
-	// Fatalf, which stops this goroutine rather than the case -- so on that
-	// path the case fails but nothing sends, and the timeout below is what
-	// ends it. That is the same outcome by a different route, and both are
-	// failures, so nothing here needs to tell them apart.
+	// Fatalf, which logs the message and then stops this goroutine rather than
+	// the case -- so on that path nothing is ever sent and the timeout below
+	// is what ends the wait, a full bound later. Both routes fail the case, so
+	// neither is missed; what the message must not do is name a cause, since
+	// it cannot tell the two apart. Verified that Fatalf's own message
+	// survives from a spawned goroutine, so the real reason is on the line
+	// above whenever there is one.
 	go func() { done <- world.Snapshot() }()
 	select {
 	case snapshot := <-done:
 		return snapshot
 	case <-time.After(snapshotBound):
-		t.Fatalf("Snapshot did not return within %s; it opened a non-regular file and blocked", snapshotBound)
+		t.Fatalf("Snapshot did not return within %s: either it opened a non-regular file and blocked, which is what this case exists to catch, or it failed on the harness error logged above", snapshotBound)
 		return nil
 	}
 }

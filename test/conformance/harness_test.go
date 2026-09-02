@@ -183,8 +183,14 @@ var readSourcesOnce sync.Once
 // panics instead of quietly buying back the stale pass.
 //
 // It reads the whole tree rather than a list of source directories. Reading
-// too much only costs a cache miss on an unrelated edit; reading too little
-// costs a stale pass, so the walk errs deliberately in the cheap direction.
+// too little costs a stale pass; reading too much costs time and a cache miss
+// on an unrelated edit, so the walk errs deliberately in the cheaper
+// direction. "Cheaper" is not "free", and it scales with the working tree: a
+// large artifact left in the checkout is read on every run, and cmd/go then
+// hashes it in full whatever we read of it, so capping the read would not cap
+// the cost. If this tree ever grows a vendored or generated directory, skip
+// that directory rather than the files -- but never narrow the walk back to a
+// guess at where the program lives.
 // The earlier version read *.go under a hardcoded cmd/ and internal/, which
 // misses whatever the next tickets add -- appspec/05's application database is
 // a set of .cfg files, not Go source -- and would have gone on reading nothing
@@ -195,6 +201,15 @@ var readSourcesOnce sync.Once
 // moment later and say so properly. Reading *nothing* is different, and
 // panics: that is the silent-degradation shape this mechanism keeps failing
 // in, and it looks exactly like success.
+// mainSourceAnchor and internalPrefix name the program's own source, which the
+// walk must reach for the cache key to track it. Naming them means a rename
+// that moves the program stops the suite loudly, on its next run, rather than
+// leaving it passing over code it no longer covers.
+var (
+	mainSourceAnchor = filepath.Join("cmd", "mackup", "main.go")
+	internalPrefix   = "internal" + string(filepath.Separator)
+)
+
 func readImplementationSources() {
 	// flag.Parse runs at the top of m.Run and the testlog opens just after, so
 	// unparsed flags mean this is running somewhere its reads go nowhere.
@@ -241,21 +256,28 @@ func readImplementationSources() {
 
 	// Anchors rather than a file count, so a failure says what is missing
 	// rather than that a number came out low.
+	//
+	// Every anchor is inside the program on purpose. The first version of this
+	// check asked for "any .go file", which this package's own sources satisfy
+	// -- they sit under the module root and are read on every run by
+	// construction -- so it was true whenever the walk ran at all and could
+	// never report the thing it was written to report: the implementation
+	// dropping out of the walk. An anchor that cannot fail is not a check.
 	missing := []string{}
-	for _, anchor := range []string{"go.mod", "Makefile"} {
+	for _, anchor := range []string{"go.mod", "Makefile", mainSourceAnchor} {
 		if !read[anchor] {
 			missing = append(missing, anchor)
 		}
 	}
-	sawGo := false
+	sawInternal := false
 	for relative := range read {
-		if strings.HasSuffix(relative, ".go") {
-			sawGo = true
+		if strings.HasPrefix(relative, internalPrefix) && strings.HasSuffix(relative, ".go") {
+			sawInternal = true
 			break
 		}
 	}
-	if !sawGo {
-		missing = append(missing, "any .go file")
+	if !sawInternal {
+		missing = append(missing, "any "+internalPrefix+"*.go")
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
@@ -277,9 +299,16 @@ const buildDirAbandonedAfter = time.Hour
 //
 // Without the refresh the mtime is set once, when the binaries are built, and
 // then never moves -- so "untouched for an hour" means "started over an hour
-// ago", not "idle". A run paused that long under a debugger would have its
-// binaries deleted out from under it by the next run to start, which is the
+// ago", not "idle", and a suite that simply ran that long would have its
+// binaries deleted out from under it by the next run to start. That is the
 // mid-suite hazard the per-run directory exists to prevent.
+//
+// What this does NOT cover, since it is worth being exact about: a process
+// that is stopped rather than slow. A debugger breakpoint or a SIGSTOP halts
+// this goroutine along with every other, so an hour spent paused leaves the
+// mtime as stale as no refresh at all. Closing that needs liveness rather than
+// a timestamp -- a lock held for the run, released by the kernel on exit --
+// which is more machinery than a disk-reclaiming reaper has earned.
 const buildDirTouchInterval = 5 * time.Minute
 
 // keepBuildDirFresh refreshes dir's modification time until the process ends.

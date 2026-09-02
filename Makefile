@@ -38,8 +38,10 @@ test:
 # cmd/ or internal/ -- it shells out to `go build` -- so nothing about the
 # implementation reaches the test cache key on its own, and a cached PASS
 # survives a broken program. Verified: replacing "Usage:" in
-# internal/cli/usage.go left `go test ./test/conformance/` reporting
-# "ok (cached)" while -count=1 gave 10 failures.
+# internal/cli/usage.go left `go test -tags conformance ./test/conformance/`
+# reporting "ok (cached)" while -count=1 gave 10 failures. The tag belongs in
+# that command -- without it the package is excluded from the build and the
+# run fails on setup, which says nothing about caching either way.
 #
 # This flag only covers what runs through this recipe. Two other mechanisms
 # cover what does not, and the header of test/conformance/harness_test.go says
