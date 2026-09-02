@@ -115,7 +115,7 @@ vet:
 # variable so that each target keeps its own guard on find's exit status; the
 # thing to avoid is one of them drifting, so change both.
 fmt:
-	@files="$$(find . \( -name .git -o -name vendor -o -name testdata -o -path ./bin \) -prune -o -name '*.go' -print)" || { echo "make: find failed" >&2; exit 1; }; \
+	@files="$$(find . \( -name '.?*' -o -name '_*' -o -name vendor -o -name testdata -o -path ./bin \) -prune -o -name '*.go' -print)" || { echo "make: find failed" >&2; exit 1; }; \
 		test -n "$$files" || { echo "make: found no Go files to format" >&2; exit 1; }; \
 		gofmt -l -w $$files
 
@@ -157,11 +157,27 @@ fmt:
 # the formatting gate.
 #
 # The prune list matters more here than in that walk, because `make fmt` shares
-# it and fmt REWRITES what it finds. .git is history. bin is the Makefile's own
-# build output. vendor is third-party source carrying no gofmt guarantee: left
-# in, the first `go mod vendor` turns this gate permanently red over code the
-# project does not own, and `make fmt` rewrites those dependencies in place --
-# which is a good deal worse than a red gate. Both walks agree on the list.
+# it and fmt REWRITES what it finds. bin is the Makefile's own build output.
+# vendor is third-party source carrying no gofmt guarantee: left in, the first
+# `go mod vendor` turns this gate permanently red over code the project does
+# not own, and `make fmt` rewrites those dependencies in place -- which is a
+# good deal worse than a red gate.
+#
+# Names beginning with "." or "_" are pruned for the same reason, and that
+# corrects a call made one commit earlier. The claim then was that such
+# directories "hold the project's own code when they hold anything", so a loud
+# failure over them was the useful kind. That is not what they hold: a
+# `git worktree add .worktrees/x` holds another branch's source, and .direnv,
+# .gopath and .tools hold third-party trees. The Go toolchain excludes both
+# prefixes outright -- `go vet ./...` and `go list ./...` ignore a
+# .scratchcheck/x.go this find happily listed, observed -- so the gate was
+# stricter than the compiler over files the compiler does not consider part of
+# the module, and `make fmt` would rewrite another branch's checkout in place.
+# The vendor argument applies unchanged: a loud failure is only useful over
+# code someone here can fix.
+#
+# ".?*" and not ".*", so that find does not prune the "." it was told to start
+# from and match nothing at all.
 #
 # testdata is excluded, for the reason `go build` excludes it: nothing under it
 # is part of the build, so it is where a package keeps fixtures that are
@@ -178,7 +194,7 @@ fmt:
 # reads STDIN, so a find that matched nothing would hang the gate rather than
 # fail it. Verified.
 check: vet test
-	@files="$$(find . \( -name .git -o -name vendor -o -name testdata -o -path ./bin \) -prune -o -name '*.go' -print)" || { echo "make: find failed" >&2; exit 1; }; \
+	@files="$$(find . \( -name '.?*' -o -name '_*' -o -name vendor -o -name testdata -o -path ./bin \) -prune -o -name '*.go' -print)" || { echo "make: find failed" >&2; exit 1; }; \
 		test -n "$$files" || { echo "make: found no Go files to format-check" >&2; exit 1; }; \
 		unformatted="$$(gofmt -l $$files)" || { echo "make: gofmt failed" >&2; exit 1; }; \
 		test -z "$$unformatted" || { echo "gofmt needed:"; printf '%s\n' "$$unformatted"; exit 1; }

@@ -76,6 +76,15 @@ def repl(f, old, new):
     return ("repl", f, old, new)
 
 def tail(f, marker, new):
+    """Replace from `marker` to end of file with `new`.
+
+    Only means what it says while the marker's declaration is the LAST one in
+    the file, so apply() checks that rather than trusting it. It was true when
+    the one entry using this was written and nothing said so; adding a function
+    after ExpectUnchanged would have made that entry delete it too and then
+    report either a phantom DOES-NOT-COMPILE or a kill credited to the wrong
+    mutation.
+    """
     return ("tail", f, marker, new)
 
 def cut(f, start, end):
@@ -330,6 +339,14 @@ def apply(edits):
             i = src.find(a)
             if i < 0:
                 return None, "marker %r not found in %s" % (a[:60], f)
+            strays = [line for line in src[i + len(a):].splitlines()
+                      if line.startswith(("func ", "type ", "var ", "const "))]
+            if strays:
+                return None, ("tail from %r would also delete %d later top-level "
+                              "declaration(s) in %s, starting with %r; this edit only "
+                              "means what it names while its marker's declaration is "
+                              "the last in the file"
+                              % (a[:40], len(strays), f, strays[0][:60]))
             src = src[:i] + b
         open(path, "w").write(src)
         touched.add(f)

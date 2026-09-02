@@ -526,7 +526,18 @@ func TestTheForcedStampGOFLAGSKeepsWhatGoEnvAlreadyCarries(t *testing.T) {
 		t.Fatalf("writing a go env file: %v", err)
 	}
 
-	goflags, err := goflagsForcingVCSStamp(environWith(environWithoutMakeflags(), "GOENV", settings))
+	// GOFLAGS is cleared as well as GOENV set, and leaving it out was a bug
+	// the first version of this case shipped with: `go env` prefers an
+	// environment GOFLAGS over the GOENV file WHOLESALE -- the same fact the
+	// function under test exists because of -- so on any machine or runner
+	// that exports GOFLAGS this read never saw -mod=mod and the case failed,
+	// blaming a merge bug that was not there. Observed, with
+	// GOFLAGS=-buildvcs=false in the environment.
+	//
+	// Set empty rather than removed: an empty GOFLAGS lets the file's value
+	// win, which was checked rather than assumed.
+	environment := environWith(environWithoutMakeflags(), "GOENV", settings)
+	goflags, err := goflagsForcingVCSStamp(environWith(environment, "GOFLAGS", ""))
 	if err != nil {
 		t.Fatalf("computing the forced-stamp GOFLAGS: %v", err)
 	}
@@ -826,20 +837,34 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 			// reasons; this ignores it because the convention does not
 			// address it.
 			//
-			// The vendor skip is UNEXERCISED, unlike the testdata one next
-			// to it, and that is a deliberate limit rather than an oversight:
-			// a vendor directory at the module root is not an inert fixture,
-			// it changes how the whole module builds, so committing one to
-			// pin this line would cost more than the line is worth. It is
-			// three tokens in a condition that the testdata case already
-			// proves is reached.
+			// Names beginning with "." or "_" are pruned too, and that
+			// reverses what was written here one commit earlier: that they
+			// "hold the project's own code when they hold anything", so a
+			// loud failure over them was the useful kind. They do not. A
+			// `git worktree add .worktrees/x` holds another branch's source;
+			// .direnv, .gopath and .tools hold third-party trees. The Go
+			// toolchain excludes both prefixes outright, so this walk was
+			// stricter than the compiler over files the compiler does not
+			// consider part of the module -- and an unparseable one there
+			// fatals this case with a message about doc comments. Observed:
+			// `go vet ./...` and `go list ./...` both ignore a
+			// .scratchcheck/x.go that the gate's own file list included.
 			//
-			// What this does NOT skip, still deliberately: directories whose
-			// names begin with "_" or "." other than .git, which `go build`
-			// also ignores. Those hold the project's own code when they hold
-			// anything, so the loud failure is the useful kind.
+			// The root itself is exempt from that test, or a checkout in a
+			// directory whose own name starts with "." would prune the entire
+			// walk and leave the checked == 0 backstop to report it.
+			//
+			// The vendor and dot/underscore skips are UNEXERCISED, unlike the
+			// testdata one next to them, and that is a deliberate limit
+			// rather than an oversight: neither a vendor directory nor a
+			// nested worktree is an inert fixture the way testdata is -- both
+			// change what the module is -- so committing one to pin these
+			// lines would cost more than the lines are worth. They are a
+			// condition the testdata case already proves is reached.
 			if entry.IsDir() {
-				if entry.Name() == "testdata" || entry.Name() == ".git" || entry.Name() == "vendor" || path == filepath.Join(root, "bin") {
+				name := entry.Name()
+				if name == "testdata" || name == "vendor" || path == filepath.Join(root, "bin") ||
+					(path != root && (strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_"))) {
 					return filepath.SkipDir
 				}
 				return nil
@@ -913,6 +938,32 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 							}
 							continue
 						}
+						// Directive-style openers -- "// TODO(someone): ..."
+						// or a lone "// Deprecated: use Bar." -- are held to
+						// the full rule here, and that is a decision rather
+						// than an oversight, so it is recorded where the next
+						// round will look.
+						//
+						// The relaxation above was granted on measurement: of
+						// go1.25.7's own test functions carrying a leading
+						// comment, 1193 of 1657 do not open with the
+						// function's name, so the gate was rejecting the
+						// normal way Go writes tests. The same count over
+						// NON-test top-level functions is 2934 of 11714, and
+						// only 85 of those are directive-style. A convention
+						// three quarters of the standard library keeps is a
+						// convention, not a trap, and this tree keeps it
+						// everywhere.
+						//
+						// The Deprecated case is weaker still than the count
+						// suggests: the form Go documents puts the
+						// description first and the "Deprecated:" paragraph
+						// after it, so a correctly written deprecation
+						// already opens with the name and passes. What fails
+						// is a deprecation with no doc comment, and the fix
+						// the diagnostic asks for -- write one -- is what the
+						// convention is for. Do not relax this without a
+						// count that says the tree is wrong.
 						t.Errorf("%s: the doc comment on %s opens with %q; either it belongs to something else and a declaration was inserted under it, or it does not follow the convention the rest of the tree does", relative, names[0], opening)
 						continue
 					}
