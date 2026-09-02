@@ -33,7 +33,7 @@ GO_SOURCES := find . \( -name '.?*' -o -name '_*' -o -name vendor -o -name testd
 VERSION ?=
 LDFLAGS := $(if $(VERSION),-ldflags "-X github.com/promptctl/macklebox/internal/version.value=$(VERSION)")
 
-.PHONY: all build test conformance vet fmt check clean
+.PHONY: all build test conformance vet fmt check anchors clean
 
 all: check build
 
@@ -283,6 +283,36 @@ check: vet test
 		$(GO_SOURCES) -print | grep -q . || { echo "make: found no Go files to format-check" >&2; exit 1; }; \
 		unformatted="$$($(GO_SOURCES) -exec gofmt -l {} +)" || { echo "make: gofmt failed" >&2; exit 1; }; \
 		test -z "$$unformatted" || { echo "gofmt needed:"; printf '%s\n' "$$unformatted"; exit 1; }
+
+# Resolve every mutation-battery anchor against the tree, without running the
+# gate once and without writing a byte. Seconds, where a full battery run takes
+# the better part of an hour.
+#
+# It exists because an anchor breaking is not a rare event: two consecutive
+# rounds on this branch each rewrote a line some entry pointed at, and both
+# times the tree was committed and pushed before the full run reported
+# BROKEN-ANCHOR. Nothing in `make check` reads test/mutation/battery.py -- it is
+# not a Go file and mutating it dirties the tree -- so nothing else remembers
+# that file exists. Run this after any edit to a file the battery names.
+#
+# DELIBERATELY NOT A PREREQUISITE OF check, and this is the part to read before
+# "simplifying" it into one. The battery runs `make check` on a MUTATED tree,
+# once per entry, and a mutation that rewrites a line another entry anchors on
+# would fail this step for a reason that has nothing to do with the mutation
+# under test. Measured, not feared: 7 of the 52 entries break at least one other
+# entry's anchor when applied ("ExpectUnchanged gutted" breaks 6). Since `check`
+# runs vet and test first, that only surfaces for a mutation the suite does NOT
+# kill -- which is exactly the SURVIVED result the battery exists to report, and
+# it would arrive dressed as "killed by (build/gate)". A check that converts the
+# one finding worth having into a phantom kill is worse than one that runs in a
+# different place.
+#
+# CI runs it as its own step instead, which is where the last two breakages
+# would have been caught within a minute of the push. That also keeps python3
+# out of the gate a developer runs: nothing else here needs it, and a golang
+# container or a Mac without the command-line tools has none.
+anchors:
+	python3 test/mutation/battery.py --anchors
 
 clean:
 	rm -rf bin

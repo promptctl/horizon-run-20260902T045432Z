@@ -77,6 +77,15 @@ jobs:
       # check -- the same single gate a developer runs locally.
       - run: make check
 
+      # The mutation battery's anchors, resolved against this commit. Its own
+      # step and not part of `make check`, for the reason the anchors target
+      # records: the battery runs `make check` over a mutated tree, and 7 of its
+      # 52 entries rewrite a line another entry anchors on, so a step inside the
+      # gate would turn a SURVIVED into a phantom kill. Here it costs a second
+      # and catches the breakage on the push that caused it, rather than an hour
+      # into the next full run.
+      - run: make anchors
+
       # The default output path, which `make check` deliberately does not take:
       # it is .PHONY and writes bin/mackup, so a gate that built would overwrite
       # a maintainer's stamped release binary with an unstamped one. Here the

@@ -644,7 +644,7 @@ func TestTheSnapshotRecordsASymlinkByItsTargetWithoutFollowingIt(t *testing.T) {
 	if !strings.HasPrefix(got, "symlink ") {
 		t.Errorf("snapshot recorded %s as %q, want it to begin with %q", key, got, "symlink ")
 	}
-	if want := "-> real.txt"; !strings.HasSuffix(got, want) {
+	if want := `-> "real.txt"`; !strings.HasSuffix(got, want) {
 		t.Errorf("snapshot recorded %s as %q, want it to end with %q; without the target a re-pointed link is indistinguishable from an untouched one", key, got, want)
 	}
 	// Lstat, not Stat: a snapshot that followed the link would record the
@@ -1609,6 +1609,7 @@ func TestExpectUnchangedReportsEveryShapeOfChange(t *testing.T) {
 		}
 		world := NewWorld(t)
 		path := world.WriteFile("secret", original, 0o200)
+		key := world.SnapshotKey("secret")
 		stat, err := os.Stat(path)
 		if err != nil {
 			t.Fatalf("stating %s: %v", path, err)
@@ -1620,8 +1621,28 @@ func TestExpectUnchangedReportsEveryShapeOfChange(t *testing.T) {
 		if err := os.Chtimes(path, stat.ModTime(), stat.ModTime()); err != nil {
 			t.Fatalf("restoring the stamp of %s: %v", path, err)
 		}
+
+		// The instrument, checked before it is trusted, exactly as the
+		// same-size-same-stamp case below does it. Chtimes succeeding is not
+		// the stamp coming back: on a coarse or truncating filesystem the
+		// stamp differs on its own, the assertion passes through the stamp
+		// rather than the size, and the battery's "the unreadable-file record
+		// drops its size" entry is credited with a kill it did not earn.
+		//
+		// These two are the only Chtimes calls in the suite that put a stamp
+		// BACK and then assert on the difference; the others age a stamp by
+		// hours to put an entry either side of the reaper's threshold, where a
+		// second of granularity changes no answer.
+		restored, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		if !restored.ModTime().Equal(stat.ModTime()) {
+			t.Skipf("this filesystem would not restore %s's modification time (%s, then %s after Chtimes), so the rewrite is visible through the stamp and this case cannot isolate the size field", key, stat.ModTime(), restored.ModTime())
+		}
+
 		expectReported(t, world.captureReport(t, func() { world.ExpectUnchanged(before) }),
-			world.SnapshotKey("secret"), "changed")
+			key, "changed")
 	})
 
 	t.Run("a fixture whose bytes hold a blindness marker", func(t *testing.T) {
@@ -1635,10 +1656,25 @@ func TestExpectUnchangedReportsEveryShapeOfChange(t *testing.T) {
 		// Contrived as a fixture, not as a shape -- this suite's own testdata
 		// holds deliberately odd bytes, and appspec/05's application database
 		// is a set of files whose contents the program copies verbatim.
+		//
+		// It covers both branches of Snapshot that carry arbitrary text, not just the
+		// one that motivated the anchoring. A symlink's TARGET lands at the
+		// end of its record, where contentsUnreadable is matched with
+		// HasSuffix, and it was recorded raw while this case pinned only the
+		// file branch one case over -- so a target ending in the marker
+		// reported "home/link could not be listed ... make the fixture
+		// readable" over a link that is perfectly readable. Reproduced against
+		// the unquoted record, which is what this half now keeps out.
+		//
+		// Not contrived for a symlink either: appspec/05's link engine makes
+		// these links, so their targets are paths this program chose.
 		world := NewWorld(t)
 		world.WriteFile("notes", "a directory here <contents unreadable>\n<unstatable>\n", 0o600)
+		if err := os.Symlink("elsewhere <contents unreadable>", world.Path("link")); err != nil {
+			t.Fatalf("creating a symlink whose target holds the marker text: %v", err)
+		}
 		if reported := world.captureReport(t, func() { world.ExpectUnchanged(world.Snapshot()) }); len(reported) != 0 {
-			t.Errorf("ExpectUnchanged reported %v over a readable file whose CONTENT holds the marker text; nothing here is blind", reported)
+			t.Errorf("ExpectUnchanged reported %v over a readable file whose CONTENT holds the marker text and a symlink whose TARGET does; nothing here is blind", reported)
 		}
 	})
 

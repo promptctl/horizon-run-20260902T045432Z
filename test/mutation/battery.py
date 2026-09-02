@@ -266,10 +266,24 @@ MUTATIONS = [
    "// Regression for the round-9 argv scan bug.\nfunc TestOrdinaryComment(t *testing.T) { NewWorld(t) }\n\n// moduleRoot is the directory holding go.mod, found by walking up from the")],
    SURVIVES),
 
+ # The other half of the same record: recorded, but recorded RAW. The target
+ # sits at the end of the record, which is where the blindness scan matches
+ # contentsUnreadable with HasSuffix, so an unquoted target ending in that
+ # marker turns every ExpectUnchanged in the world into a spurious "make the
+ # fixture readable" over a file that already is.
+ ("the symlink target is recorded unquoted", [repl(H,
+   'snapshot[relative] = fmt.Sprintf("symlink %04o @%d -> %q", info.Mode().Perm(), stamp, target)',
+   'snapshot[relative] = fmt.Sprintf("symlink %04o @%d -> %s", info.Mode().Perm(), stamp, target)')],
+   'nothing here is blind'),
+
  ("the symlink target is not recorded", [repl(H,
    '\t\t\ttarget, err := os.Readlink(path)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n',
    '\t\t\ttarget := "constant"\n\t\t\t_ = os.Readlink\n')],
-   'want it to end with "-> real.txt"'),
+   # The tail of that Errorf rather than its %q-rendered want, which now
+   # carries Go's own escaping of the quoted target and would have to be
+   # re-encoded here every time the record's quoting changes. This clause is
+   # unique to the one assertion the mutation has to trip.
+   'without the target a re-pointed link is indistinguishable from an untouched one'),
 
  # Removes the arm, not its body. An earlier entry replaced the body and so
  # left the branch itself standing, which is why the 30s bound, the recording
@@ -495,13 +509,30 @@ def apply(edits, write=True):
     anchor check is worth running is right after editing a file in FILES, when
     the tree is dirty by definition, and a mode that rewrote sources there
     would be asking to lose uncommitted work to an interrupt. Resolving is all
-    the check needs -- an anchor is either found exactly where the entry says
-    or it is not, and neither answer depends on writing the result.
+    the check needs, and resolution does not depend on writing because both
+    modes resolve against the same in-memory buffer below -- that independence
+    is a property this function has to arrange, not one it can assume.
     """
+    # One entry's edits accumulate in memory and are written, if at all, only
+    # once every anchor has resolved. Re-reading the file per edit made
+    # resolution depend on writing: with write=True the previous edit was on
+    # disk so the next one saw it, and with write=False it did not -- so
+    # --anchors resolved every edit after the first against the PRISTINE file
+    # and was blind to exactly the class it was added for, an anchor that
+    # stops matching once an earlier edit in the same entry lands. Both modes
+    # share this buffer rather than one path each, because two code paths for
+    # "what does the next edit see" is the drift the check exists to catch.
+    #
+    # A side effect worth naming: an entry that fails on its second edit now
+    # writes nothing at all, where before it left the first edit on disk for
+    # restore() to undo on the next iteration.
+    buffered = {}
     touched = set()
     for kind, f, a, b in edits:
         path = os.path.join(REPO, f)
-        src = open(path).read()
+        src = buffered.get(path)
+        if src is None:
+            src = open(path).read()
         if kind == "repl":
             n = src.count(a)
             if n != 1:
@@ -530,9 +561,11 @@ def apply(edits, write=True):
                               "the last in the file"
                               % (a[:40], len(strays), f, strays[0][:60]))
             src = src[:i] + b
-        if write:
-            open(path, "w").write(src)
+        buffered[path] = src
         touched.add(f)
+    if write:
+        for path, src in buffered.items():
+            open(path, "w").write(src)
     return touched, None
 
 # apply() writes to whatever path a mutation names, but only paths in FILES are

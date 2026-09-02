@@ -1263,7 +1263,18 @@ func (w *World) Snapshot() Snapshot {
 			if err != nil {
 				return err
 			}
-			snapshot[relative] = fmt.Sprintf("symlink %04o @%d -> %s", info.Mode().Perm(), stamp, target)
+			// %q, not %s. The target is program-controlled text -- appspec/05's
+			// link engine makes these links, so their targets are this
+			// program's own output -- and it lands at the END of the record,
+			// where ExpectUnchanged's blindness scan matches contentsUnreadable
+			// with HasSuffix. A raw target ending in " <contents unreadable>"
+			// therefore reported every ExpectUnchanged in that world as blind,
+			// with a diagnostic telling the author to make a fixture readable
+			// that already is: the same spurious misdirecting failure the
+			// anchored scan was written to remove for file content, surviving
+			// one branch over. Quoting escapes it, and gives the record the
+			// same closing-quote terminator a readable file's has.
+			snapshot[relative] = fmt.Sprintf("symlink %04o @%d -> %q", info.Mode().Perm(), stamp, target)
 		case entry.IsDir():
 			snapshot[relative] = fmt.Sprintf("dir %04o @%d", info.Mode().Perm(), stamp)
 		case !info.Mode().IsRegular():
@@ -1397,8 +1408,14 @@ func (w *World) ExpectUnchanged(before Snapshot) {
 	// Anchoring removes the ambiguity outright rather than making it
 	// unlikely. entryUnstatable REPLACES the record so it is a prefix;
 	// contentsUnreadable is appended so it is a suffix; and neither can be
-	// faked from the other side, because a file record ends in the closing
-	// quote of %q and begins with "file ".
+	// faked from the other side. That last half is a property of every branch
+	// of Snapshot, checked branch by branch rather than assumed: the two
+	// carrying arbitrary text -- a regular file's content and a symlink's
+	// target -- both render it with %q and so end in a closing quote, and the
+	// rest (dir, unreadable file, other types) end in a digit or a fixed
+	// literal. None of them begins with entryUnstatable either; they begin
+	// with "file ", "dir ", "symlink " or a mode type. The symlink branch was
+	// the one that did NOT hold when this was first written.
 	//
 	// entryUnstatable is tested first because an entry can be both -- an
 	// unstatable directory that also cannot be listed records one then the
