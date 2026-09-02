@@ -246,14 +246,24 @@ MUTATIONS = [
  # (exempt test functions, or skip _test.go) would have made the first one
  # invisible, and all three defects the guard was written for were in a
  # _test.go file.
+ # Both injected functions call NewWorld, and the empty bodies they had before
+ # are why: TestEveryCaseThatBuildsNoWorldIsAccountedFor holds every case in
+ # this package to building a world or carrying an allowlist entry, so an
+ # injected `func TestOrdinaryComment(t *testing.T) {}` is not the "correct
+ # code" this SURVIVES entry claims it is -- it reddened the gate, and the
+ # entry reported FALSE-POSITIVE the first time both existed together. The
+ # stranded-comment entry below it had the opposite problem, still killed but
+ # now by two guards at once, which is the attribution rule 3 exists for. A
+ # body that builds a world makes both injections ordinary cases again and
+ # leaves each entry testing the one guard it names.
  ("doc stranded on an inserted test function", [repl(H,
    "func moduleRoot() (string, error) {",
-   "func TestInserted(t *testing.T) {}\n\nfunc moduleRoot() (string, error) {")],
+   "func TestInserted(t *testing.T) { NewWorld(t) }\n\nfunc moduleRoot() (string, error) {")],
    'the doc comment on the test TestInserted opens with "moduleRoot"'),
 
  ("a test function may carry an ordinary explanatory comment", [repl(H,
    "// moduleRoot is the directory holding go.mod, found by walking up from the",
-   "// Regression for the round-9 argv scan bug.\nfunc TestOrdinaryComment(t *testing.T) {}\n\n// moduleRoot is the directory holding go.mod, found by walking up from the")],
+   "// Regression for the round-9 argv scan bug.\nfunc TestOrdinaryComment(t *testing.T) { NewWorld(t) }\n\n// moduleRoot is the directory holding go.mod, found by walking up from the")],
    SURVIVES),
 
  ("the symlink target is not recorded", [repl(H,

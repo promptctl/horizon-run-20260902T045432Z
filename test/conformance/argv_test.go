@@ -876,6 +876,15 @@ func TestEveryCaseThatBuildsNoWorldIsAccountedFor(t *testing.T) {
 	// gap. Identifiers only, so NewWorld inside a comment or a string does not
 	// count.
 	//
+	// The tax that costs one line is real and was underpriced when this was
+	// written: the mutation battery injects test functions of its own to drive
+	// the doc guard, and an injected `func TestOrdinaryComment(t *testing.T)
+	// {}` is a case that builds no world. The entry declaring that shape
+	// CORRECT -- the doc guard must accept an ordinary explanatory comment on
+	// a test -- reported FALSE-POSITIVE the first time both guards existed
+	// together. Those injections now build a world. Anything that adds a case
+	// to this package, a fixture included, pays the line.
+	//
 	// Every _test.go file in the directory is parsed, build tags ignored, so
 	// this case sees the same set on every GOOS. harness_unix_test.go's cases
 	// do not compile on Windows; leaving them out of the list there would make
