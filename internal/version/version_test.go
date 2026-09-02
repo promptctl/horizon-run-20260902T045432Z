@@ -98,6 +98,20 @@ func withBuildInfo(t *testing.T, info *debug.BuildInfo) {
 	readBuildInfo = func() (*debug.BuildInfo, bool) { return info, true }
 }
 
+func TestStringFallsBackWhenTheBuildCarriesNoBuildInfo(t *testing.T) {
+	// The nil arm of fromBuildInfo. debug.ReadBuildInfo never returns
+	// (nil, true), so this shape is reachable only through the readBuildInfo
+	// seam -- but the guard exists, and an untested guard is decoration.
+	// Verified by mutation: deleting `if bi == nil` from fromBuildInfo makes
+	// this case panic in String() rather than fail some other way.
+	withBuildInfo(t, nil)
+
+	value = ""
+	if got := String(); got != Fallback {
+		t.Errorf("String() = %q for a build with no build info, want the fallback token %q", got, Fallback)
+	}
+}
+
 func TestAnExplicitStampOutranksTheModulesOwnVersion(t *testing.T) {
 	// The only shape in which precedence is observable at all. A working-tree
 	// build yields "" from fromBuildInfo, so a stamp has nothing to outrank
