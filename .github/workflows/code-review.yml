@@ -1,0 +1,30 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+# Cancel an in-flight review when a new commit is pushed, so a rapid
+# push loop doesn't pay for reviews of commits that are already replaced.
+concurrency:
+  group: ai-code-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: promptctl/copirate-code-review-agent@v1
+        with:
+          # codex is the provider whose credential this org actually holds.
+          PROVIDER: codex
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
