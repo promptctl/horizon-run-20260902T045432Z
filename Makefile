@@ -149,6 +149,16 @@ conformance:
 # untagged half of the package still compile without the unix half", and it
 # does that without a toolchain for that platform.
 #
+# GOARCH is pinned for the reason that sentence gives about plan9, which was
+# reasoned about for the GOOS and then left floating for the arch -- the same
+# exposure, one field over. Go builds only windows/386, windows/amd64 and
+# windows/arm64 (`go tool dist list`), so a host on any other arch inherited
+# its own: `GOOS=windows go vet` on linux/ppc64le aborts the entire gate
+# before a test runs, with "unsupported GOOS/GOARCH pair windows/ppc64le" and
+# nothing said about the code. Reproduced with GOARCH=ppc64le. amd64 costs
+# nothing here, since the question is whether the untagged half compiles at
+# all and no arch-specific code is involved.
+#
 # Scoped to that package and not ./..., which is the difference between the
 # invariant and a trap. This is a dotfile manager: appspec/01's permission
 # rules and appspec/05's link engine bring syscall and x/sys/unix into
@@ -158,7 +168,7 @@ conformance:
 # question is worth asking.
 vet:
 	go vet -tags conformance ./...
-	GOOS=windows go vet -tags conformance ./test/conformance/
+	GOOS=windows GOARCH=amd64 go vet -tags conformance ./test/conformance/
 
 # The same GO_SOURCES as the check target's gofmt step -- one definition, not
 # two copies -- for the reason given where it is defined. This comment used to

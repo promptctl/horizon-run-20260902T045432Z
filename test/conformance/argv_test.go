@@ -1092,9 +1092,19 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 			// `go vet ./...` and `go list ./...` both ignore a
 			// .scratchcheck/x.go that the gate's own file list included.
 			//
-			// The root itself is exempt from that test, or a checkout in a
-			// directory whose own name starts with "." would prune the entire
-			// walk and leave the checked == 0 backstop to report it.
+			// The root itself is exempt from EVERY name test, or a checkout
+			// in a directory called ".config", "vendor" or "testdata" prunes
+			// the entire walk on the first callback and leaves the checked ==
+			// 0 backstop to report it. The exemption used to cover only the
+			// dot/underscore clause, three tokens away on the same line from
+			// two name tests that needed it just as much -- the branch's
+			// recurring shape, a fix landing one level over from where it
+			// belongs. Reproduced by unpacking this tree into directories
+			// named vendor and testdata and running the case in each.
+			//
+			// The sibling walk in readImplementationSources had the same gap
+			// on its ".git" test, and worse: it panics rather than failing one
+			// case. Fixed in the same commit; checked before either was.
 			//
 			// The vendor and dot/underscore skips are UNEXERCISED, unlike the
 			// testdata one next to them, and that is a deliberate limit
@@ -1105,8 +1115,10 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 			// condition the testdata case already proves is reached.
 			if entry.IsDir() {
 				name := entry.Name()
-				if name == "testdata" || name == "vendor" || path == filepath.Join(root, "bin") ||
-					(path != root && (strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_"))) {
+				if path != root &&
+					(name == "testdata" || name == "vendor" ||
+						strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")) ||
+					path == filepath.Join(root, "bin") {
 					return filepath.SkipDir
 				}
 				return nil
@@ -1483,6 +1495,43 @@ func TestExpectUnchangedReportsEveryShapeOfChange(t *testing.T) {
 		}
 		expectReported(t, world.captureReport(t, func() { world.ExpectUnchanged(before) }),
 			world.SnapshotKey(".mackup.cfg"), "was removed")
+	})
+
+	t.Run("a file rewritten inside a directory that cannot be listed", func(t *testing.T) {
+		// The shape that drives Snapshot's permission branch, which no case
+		// reached before: an unlistable directory records the same string
+		// before and after, so ExpectUnchanged compared two blind records and
+		// passed over a rewrite inside it.
+		//
+		// 0300 is -wx: the walk cannot list the directory, but a caller
+		// holding the exact name can still open what is in it, which is what
+		// makes the rewrite below possible and is exactly a program's own
+		// position when it writes to a path it was configured with.
+		//
+		// The assertion is two-sided on purpose. The blind report must fire,
+		// AND the rewritten file must NOT be reported -- if it were, the
+		// blindness would not be real and this whole mechanism would be
+		// answering a problem that does not exist. It is real: the file is not
+		// in either snapshot at all.
+		if os.Geteuid() == 0 {
+			t.Skip("root can list a 0300 directory, so the branch under test is unreachable here")
+		}
+		world := NewWorld(t)
+		path := world.WriteFile(filepath.Join("locked", "cfg"), original, 0o600)
+		if err := os.Chmod(filepath.Dir(path), 0o300); err != nil {
+			t.Fatalf("making the directory unlistable: %v", err)
+		}
+		before := world.Snapshot()
+		if err := os.WriteFile(path, []byte("[storage]\nengine = icloud\n"), 0o600); err != nil {
+			t.Fatalf("rewriting %s: %v", path, err)
+		}
+		reported := world.captureReport(t, func() { world.ExpectUnchanged(before) })
+		expectReported(t, reported, world.SnapshotKey("locked"), "could not be listed")
+		for _, message := range reported {
+			if strings.Contains(message, world.SnapshotKey("locked", "cfg")) {
+				t.Errorf("the rewritten file was reported by name (%q), so it is visible to the snapshot after all and the blindness report is answering nothing", message)
+			}
+		}
 	})
 
 	t.Run("mode changed with the bytes and the stamp left alone", func(t *testing.T) {

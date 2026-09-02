@@ -374,6 +374,14 @@ MUTATIONS = [
       '\t_, thisFile, _, _ := runtime.Caller(0)\n\tdir := filepath.Dir(thisFile)')],
    "github.com/promptctl/macklebox/test/conformance"),
 
+ # Snapshot's permission branch had no case at all, so ExpectUnchanged
+ # compared two records of an unlistable directory that were equal because
+ # both were blind. Errorf -> Logf leaves the mechanism standing and the
+ # report silent, which is what the defect actually looked like.
+ ("the blind-directory report is downgraded to a log", [repl(H,
+   'w.t.Errorf("%s could not be listed', 'w.t.Logf("%s could not be listed')],
+   "no report names home/locked"),
+
  ("moduleRoot walks up from runtime.Caller", [
    repl(H, '\t"path/filepath"\n', '\t"path/filepath"\n\t"runtime"\n'),
    repl(H, '\tdir, err := os.Getwd()\n\tif err != nil {\n\t\treturn "", fmt.Errorf("locating the module root: %v", err)\n\t}',
@@ -550,7 +558,6 @@ try:
         crc, cout = run("make conformance")
         cfailed = sorted({l.split()[2] for l in cout.splitlines() if l.strip().startswith("--- FAIL:") and "/" not in l.split()[2]})
         if crc == 0:
-            conf = "  [rig BLIND]"
             results.append((name, "RIG-BLIND", "")); print("RIG-BLIND  %s: killed only outside the conformance suite" % name, flush=True); continue
         conf = "  [rig: %s]" % ",".join(cfailed)
     results.append((name, "killed", ",".join(failed) + conf))

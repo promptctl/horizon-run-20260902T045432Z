@@ -57,6 +57,12 @@ import (
 	"time"
 )
 
+// contentsUnreadable is appended to the record of a directory this process
+// could not list. It is a marker rather than prose: ExpectUnchanged looks for
+// it and refuses to compare two records that are equal only because both are
+// blind. See there for what that does and does not cover.
+const contentsUnreadable = " <contents unreadable>"
+
 // stampedVersion is the version the stamped binary is built with. It is
 // deliberately not a plausible release number: a test asserting on it should
 // be obviously reading the build's stamp, not a hardcoded product version.
@@ -298,7 +304,15 @@ func readImplementationSources() {
 			// source would otherwise drop out of the cache key on its name
 			// alone, which is the same silent degradation as the hardcoded
 			// cmd/ and internal/ list this walk replaced.
-			if entry.Name() == ".git" || path == filepath.Join(root, "bin") {
+			// path != root on the name test, for the reason the doc guard's
+			// walk carries the same exemption: a checkout in a directory
+			// literally named ".git" pruned the root on the first callback,
+			// this walk read nothing, and the "read 0 files" panic below took
+			// down the whole suite rather than failing one case. Reproduced by
+			// unpacking this tree into a directory named .git. The bin test
+			// needs no exemption -- it is already anchored to a path under the
+			// root, so it cannot match the root itself.
+			if (path != root && entry.Name() == ".git") || path == filepath.Join(root, "bin") {
 				return fs.SkipDir
 			}
 			// The two prefixes the toolchain excludes outright, which .git is
@@ -1186,7 +1200,7 @@ func (w *World) Snapshot() Snapshot {
 			// what is lost is what is inside it, which is said out loud in
 			// the record rather than by aborting the whole snapshot.
 			if errors.Is(err, fs.ErrPermission) {
-				snapshot[relative] += " <contents unreadable>"
+				snapshot[relative] += contentsUnreadable
 				return fs.SkipDir
 			}
 			return err
@@ -1293,6 +1307,40 @@ func (w *World) captureReport(t *testing.T, fn func()) []string {
 func (w *World) ExpectUnchanged(before Snapshot) {
 	w.t.Helper()
 	after := w.Snapshot()
+
+	// A directory this process could not list is recorded, but nothing inside
+	// it is, so two records of it compare equal whatever happened in there.
+	// Reported rather than compared, by this suite's own standard that an
+	// assertion which cannot fail is not an assertion. Nothing drove this
+	// branch before -- the arm existed and no case reached it, which is the
+	// shape that has already shipped twice on this branch.
+	//
+	// The blind spot is narrower than it looks, and the difference is worth
+	// stating exactly rather than overclaiming it. The directory's own mtime
+	// IS in the record, and creating or removing an entry moves it, so a file
+	// appearing or vanishing inside an unlistable directory is still caught.
+	// What is invisible is an in-place rewrite of a file already there, which
+	// moves that file's mtime and not its parent's -- precisely the
+	// dry-run-that-copied-anyway shape the stamp field exists for. Measured on
+	// this filesystem, all three, not assumed.
+	//
+	// The file half of the same situation needs none of this: an unreadable
+	// FILE still contributes its mode and stamp from the stat, so a rewrite of
+	// it remains visible. Only the directory branch is blind.
+	blind, seen := []string{}, map[string]bool{}
+	for _, snapshot := range []Snapshot{before, after} {
+		for path, record := range snapshot {
+			if strings.Contains(record, contentsUnreadable) && !seen[path] {
+				seen[path] = true
+				blind = append(blind, path)
+			}
+		}
+	}
+	sort.Strings(blind)
+	for _, path := range blind {
+		w.t.Errorf("%s could not be listed, so this assertion is blind to a file rewritten in place inside it; make the fixture readable, or assert on what is in there directly", path)
+	}
+
 	for path, want := range before {
 		got, ok := after[path]
 		if !ok {

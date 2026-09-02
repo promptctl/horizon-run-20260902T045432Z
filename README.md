@@ -43,7 +43,9 @@ make conformance  # the black-box suite alone (needs -tags conformance)
 ```
 
 `make check` is the gate: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
-runs exactly that command on every pull request and every push to `master`.
+runs it on every pull request and every push to `master`, then `make build` --
+which `check` deliberately does not depend on, for the reason given above that
+target in the Makefile.
 
 ### The conformance suite
 
