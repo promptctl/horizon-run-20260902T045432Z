@@ -1,6 +1,7 @@
 package app
 
 import (
+	"github.com/promptctl/macklebox/internal/appdb"
 	"github.com/promptctl/macklebox/internal/cli"
 	"github.com/promptctl/macklebox/internal/ui"
 )
@@ -9,12 +10,19 @@ import (
 // ticket named beside it; until then a subcommand reports that it is not
 // implemented on stderr and exits non-zero, so no caller can mistake an
 // unimplemented verb for a completed action.
-func dispatch(inv cli.Invocation, streams *ui.IO) int {
+//
+// The assembled application database is passed in rather than built here: every
+// command reads the same one, and appspec/01 section 4 assembles it before
+// dispatch so that a refused definition aborts the run whatever the subcommand
+// was. No arm reads it yet -- the enumeration lookups have their first caller in
+// macklebox-resolvers-5iw.4.
+func dispatch(inv cli.Invocation, streams *ui.IO, apps *appdb.Database) int {
 	switch inv.Cmd {
 	case cli.CmdList, cli.CmdShow:
 		// TODO(macklebox-resolvers-5iw.4): the appspec/05 enumeration
 		// formats -- sorted keys with the count trailer, display name with
-		// sorted file paths.
+		// sorted file paths -- read through apps.Keys, apps.Name and
+		// apps.Files.
 		return notImplemented(inv, streams)
 	case cli.CmdBackup, cli.CmdRestore:
 		// TODO(macklebox-copy-sync-dpz.3): the one copy operation, run in

@@ -48,7 +48,9 @@ FILES = ["test/conformance/harness_test.go", "test/conformance/argv_test.go",
          "internal/version/version.go",
          "internal/ui/color.go",
          "internal/config/config.go", "internal/storage/storage.go",
-         "internal/fault/fault.go"]
+         "internal/fault/fault.go",
+         "internal/appdb/appdb.go", "internal/ini/ini.go",
+         "internal/homepath/homepath.go"]
 
 H = "test/conformance/harness_test.go"
 C = "internal/ui/color.go"
@@ -69,6 +71,9 @@ G = "test/conformance/argv_test.go"
 CF = "internal/config/config.go"
 ST = "internal/storage/storage.go"
 FA = "internal/fault/fault.go"
+AD = "internal/appdb/appdb.go"
+IN = "internal/ini/ini.go"
+HP = "internal/homepath/homepath.go"
 
 # SURVIVES marks an entry that must NOT break the gate. Most entries are
 # defects the suite has to catch; these are the opposite -- correct code that a
@@ -545,12 +550,25 @@ MUTATIONS = [
  # is the same call as the catalog deferral below, for the same reason. Add it
  # with .4, alongside the two catalog entries that banner names.
 
+ # appspec/03's environment table, and the one rule in this tree that TWO
+ # stages read from a single implementation: config discovery and database
+ # assembly both resolve home through homepath.Require. That is what makes the
+ # relative arm worth an entry of its own -- an absolute HOME is what every
+ # fixture and every developer machine has, so the arm is dead weight until
+ # something states it, and deleting it changes nothing a passing suite would
+ # notice unless a case supplies a relative one.
+ ("a relative HOME is accepted", [repl(HP,
+   '\tif !filepath.IsAbs(home) {\n'
+   '\t\treturn "", fault.Unguardedf("HOME is %q, which is not an absolute path", home)\n'
+   '\t}\n', '')],
+   "FAIL: TestAnUnsetOrRelativeHomeIsRefusedInTheUnguardedRegime"),
+
  # appspec/03 "Home-directory containment". Deleting the check is the shape a
  # reimplementation reaches for when the check looks like a redundant guard on
  # a path the program itself computed -- it is not, because two of the three
  # discovery candidates come from the environment.
  ("the home-containment check is deleted", [repl(CF,
-   '\tif !insideHome(path, home) {\n'
+   '\tif !homepath.Inside(path, home) {\n'
    '\t\t// appspec/03 "Home-directory containment": checked at construction\n'
    '\t\t// and applied to a discovered path as much as to an explicitly named\n'
    '\t\t// one, which is why this sits outside configPath\'s two branches\n'
@@ -564,8 +582,8 @@ MUTATIONS = [
  # all three candidates in play and every single-candidate case passing, so it
  # is only visible to a case that sets TWO of them at once.
  ("MACKUP_CONFIG is checked before the home config", [repl(CF,
-   "\t\tcandidates = append(candidates, absolute(expandTilde(env.MackupConfig, home)))",
-   "\t\tcandidates = append([]string{absolute(expandTilde(env.MackupConfig, home))}, candidates...)")],
+   "\t\tcandidates = append(candidates, homepath.Absolute(homepath.Expand(env.MackupConfig, home)))",
+   "\t\tcandidates = append([]string{homepath.Absolute(homepath.Expand(env.MackupConfig, home))}, candidates...)")],
    'the config read was "from-mackup-config", want the home directory\'s ~/.mackup.cfg'),
 
  # The appspec/04 trap, and the only entry here for a mutation that ADDS
@@ -646,6 +664,144 @@ MUTATIONS = [
    '\t}\n'
    '\treturn "", unlocatable("Google Drive install")')],
    'want a failure: the preferred database was chosen and could not be read'),
+
+ # --- appspec/05 the application database (macklebox-resolvers-5iw.3) --------
+ #
+ # Entries here rather than the deferral banner the catalog got below, and the
+ # difference is exactly the bar that banner states: the database's two
+ # REJECTIONS reach the boundary today even though its contents do not. A
+ # definition holding an absolute path aborts every command with a diagnostic
+ # naming the path, so `make conformance` can see a discovery or precedence
+ # defect through it -- which is what test/conformance/appdb_test.go's header
+ # calls the channel. Each of the seven below was applied in a copied tree and
+ # put to `make conformance` separately before it was written down; none
+ # reported RIG-BLIND.
+ #
+ # Four of the expects name the failing CASE rather than a sentence from its
+ # message, and that is deliberate rather than lazy. The kill for those is a
+ # helper's fatal -- "the database assembled with N applications; want a
+ # refusal" -- whose text is shared by every refusal case and whose count moves
+ # with the catalog. The rule the appspec/07 banner states is that a kill by an
+ # unrelated case must not count as coverage; naming the case satisfies it more
+ # tightly than a shared sentence would, and does not break when the catalog
+ # grows by one application.
+ #
+ # Two properties are deliberately NOT here, both for the reason the Scope and
+ # catalog deferrals give, and both belonging to macklebox-resolvers-5iw.4:
+ # definition keys being lowercased, and a definition file read under
+ # ini.LowercaseKeys so its paths lose their case. Neither reaches the boundary
+ # until `list` and `show` print keys and paths -- today both are killed by
+ # internal/appdb alone and report RIG-BLIND, accurately and uselessly. The
+ # second is the newer risk of the two: the case-policy pair of appspec/03 and
+ # appspec/05 now hangs on one argument at two call sites.
+
+ # appspec/05's absolute-path rejection, which it calls "load-bearing for the
+ # sync engine's safety" rather than input hygiene: appspec/06 never re-checks
+ # that a path is home-relative. Deleting it is the shape a reimplementation
+ # reaches for when the check reads as validation of data the project ships --
+ # and the project's own 614 definitions never trip it, which is what makes the
+ # deletion look free.
+ ("the absolute-path rejection is deleted", [repl(AD,
+   '\tif strings.HasPrefix(path, "/") {\n'
+   '\t\treturn fault.Unguardedf("Unsupported absolute path: %s", path)\n'
+   '\t}\n'
+   '\treturn nil',
+   '\t_ = path\n'
+   '\treturn nil')],
+   "FAIL: TestAnAbsolutePathIsRefusedInEitherSection"),
+
+ # The other rejection appspec/05 names, in the same load-bearing pair.
+ ("the XDG containment check is deleted", [repl(AD,
+   '\tbase := homepath.ConfigHome(env.XDGConfigHome, home)\n'
+   '\tif !homepath.Inside(base, home) {\n'
+   '\t\treturn "", fault.Unguardedf("$XDG_CONFIG_HOME must be somewhere within your home directory: %s", base)\n'
+   '\t}\n'
+   '\treturn base, nil',
+   '\treturn homepath.ConfigHome(env.XDGConfigHome, home), nil')],
+   "FAIL: TestAnXDGConfigHomeOutsideTheHomeDirectoryIsRefused"),
+
+ # The same check moved rather than removed, which is the version that looks
+ # correct: relativizing an XDG entry is where the base is USED, so checking it
+ # there reads as tighter code. It is not, and appspec/05 says why -- "this
+ # check fires while assembling the database, so it blocks every command" is
+ # unconditional, while a lazy check fires only while some definition still
+ # carries an [xdg_configuration_files] section. Every shipped fixture has one,
+ # so the mutation survives every case but the two that were written for the
+ # ORDER.
+ ("the XDG base is checked lazily rather than up front", [
+   repl(AD,
+     '\tbase := homepath.ConfigHome(env.XDGConfigHome, home)\n'
+     '\tif !homepath.Inside(base, home) {\n'
+     '\t\treturn "", fault.Unguardedf("$XDG_CONFIG_HOME must be somewhere within your home directory: %s", base)\n'
+     '\t}\n'
+     '\treturn base, nil',
+     '\treturn homepath.ConfigHome(env.XDGConfigHome, home), nil'),
+   repl(AD,
+     '\tfor _, path := range parsed.Section(xdgConfigurationFiles).Keys() {\n'
+     '\t\tif err := refuseAbsolute(path); err != nil {\n'
+     '\t\t\treturn application{}, err\n'
+     '\t\t}\n',
+     '\tfor _, path := range parsed.Section(xdgConfigurationFiles).Keys() {\n'
+     '\t\tif !homepath.Inside(xdgBase, home) {\n'
+     '\t\t\treturn application{}, fault.Unguardedf("$XDG_CONFIG_HOME must be somewhere within your home directory: %s", xdgBase)\n'
+     '\t\t}\n'
+     '\t\tif err := refuseAbsolute(path); err != nil {\n'
+     '\t\t\treturn application{}, err\n'
+     '\t\t}\n'),
+   ],
+   "want the $XDG_CONFIG_HOME refusal to come first"),
+
+ # appspec/05's three-tier precedence, read backwards: the built-in set taken
+ # first means a user's ~/.mackup/vim.cfg never replaces anything. The whole
+ # point of the two user directories is the override, and a program with this
+ # defect still lists 614 applications and still assembles cleanly.
+ ("definition precedence is reversed", [repl(AD,
+   '\t\t{files: os.DirFS(legacyPath), origin: legacyPath},\n'
+   '\t\t{files: os.DirFS(xdgPath), origin: xdgPath},\n'
+   '\t\t{files: catalog.Definitions(), origin: builtinOrigin},',
+   '\t\t{files: catalog.Definitions(), origin: builtinOrigin},\n'
+   '\t\t{files: os.DirFS(xdgPath), origin: xdgPath},\n'
+   '\t\t{files: os.DirFS(legacyPath), origin: legacyPath},')],
+   "want the definition from ~/.mackup"),
+
+ # The "*.cfg" of appspec/05 "Discovery" read as a suffix test rather than as a
+ # glob. It is the more obvious spelling of the two, and it takes a
+ # Finder-dropped "._vim.cfg" as an application called "._vim" -- which is what
+ # the definitionFiles doc comment says the dot rule earns itself against.
+ ("a dotfile is taken as a definition", [repl(AD,
+   '\t\tif strings.HasPrefix(name, ".") || !strings.HasSuffix(name, extension) {',
+   '\t\tif !strings.HasSuffix(name, extension) {')],
+   "FAIL: TestOnlyCfgFilesDirectlyInADirectoryAreDefinitions"),
+
+ # appspec/05: "Only files ending in .cfg are considered." Folding the
+ # comparison is the shape a developer on a case-insensitive filesystem writes
+ # without noticing, because on their machine the two readings agree about
+ # every file that already exists. It shares its expect with the entry above:
+ # both are killed by the same case, which is the case that owns the rule, and
+ # nothing else in the tree distinguishes them.
+ ("the .cfg suffix is matched case-insensitively", [repl(AD,
+   '\t\tif strings.HasPrefix(name, ".") || !strings.HasSuffix(name, extension) {',
+   '\t\tif strings.HasPrefix(name, ".") || !strings.EqualFold(filepath.Ext(name), extension) {')],
+   "FAIL: TestOnlyCfgFilesDirectlyInADirectoryAreDefinitions"),
+
+ # internal/ini serves BOTH file kinds -- appspec/03's config and appspec/05's
+ # definitions -- so one dialect defect now reaches two stages, and this entry
+ # is what makes that sharing observable rather than merely tidy.
+ #
+ # It is also the entry that paid for itself before it was written. Under this
+ # mutation `make conformance` exited 0: every comment fixture in
+ # TestTheConfigFileFormatIsReadAsAppspec03Describes asserted that stderr
+ # CONTAINED "from-config", and an engine read as "from-config ; a comment"
+ # contains it. The case that existed to check the comment rule passed over a
+ # parser with no comment rule. The case now asserts the whole diagnostic, and
+ # this entry is what keeps it honest.
+ ("the shared parser stops stripping comments", [repl(IN,
+   '\tif at := strings.IndexAny(line, ";#"); at >= 0 {\n'
+   '\t\treturn line[:at]\n'
+   '\t}\n'
+   '\treturn line',
+   '\treturn line')],
+   "with the comment stripped and the value trimmed"),
 
  # --- appspec/05 the built-in application catalog (macklebox-resolvers-5iw.1) -
  #

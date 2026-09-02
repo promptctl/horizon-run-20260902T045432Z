@@ -25,6 +25,8 @@ import (
 	"strings"
 
 	"github.com/promptctl/macklebox/internal/fault"
+	"github.com/promptctl/macklebox/internal/homepath"
+	"github.com/promptctl/macklebox/internal/ini"
 	"github.com/promptctl/macklebox/internal/storage"
 )
 
@@ -178,7 +180,7 @@ func (c *Config) Scope(all []string) []string {
 // no third outcome: a partially-resolved config is exactly what appspec/03
 // says cannot exist.
 func Load(override Override, env Environment) (*Config, error) {
-	home, err := homeDirectory(env)
+	home, err := homepath.Require(env.Home)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +189,7 @@ func Load(override Override, env Environment) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !insideHome(path, home) {
+	if !homepath.Inside(path, home) {
 		// appspec/03 "Home-directory containment": checked at construction
 		// and applied to a discovered path as much as to an explicitly named
 		// one, which is why this sits outside configPath's two branches
@@ -199,40 +201,21 @@ func Load(override Override, env Environment) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	parsed := parseINI(content)
+	parsed := ini.Parse(content, ini.LowercaseKeys)
 
 	if err := refuseLegacy(parsed); err != nil {
 		return nil, err
 	}
-	root, directory, err := resolveStorage(parsed.section(storageSection), home)
+	root, directory, err := resolveStorage(parsed.Section(storageSection), home)
 	if err != nil {
 		return nil, err
 	}
 	return &Config{
 		root:      root,
 		directory: directory,
-		allow:     keySet(parsed.section(syncSection)),
-		ignore:    keySet(parsed.section(ignoreSection)),
+		allow:     keySet(parsed.Section(syncSection)),
+		ignore:    keySet(parsed.Section(ignoreSection)),
 	}, nil
-}
-
-// homeDirectory returns the home directory every other path here is resolved
-// against.
-//
-// appspec/03: HOME "must be set for the program to function; if unset,
-// home-relative operations fail with an uncaught error (nonzero exit)" -- the
-// unguarded regime. A relative HOME is refused for the same reason and in the
-// same regime: it is not a home directory, and accepting one would make every
-// path the program later writes to depend on the working directory it happened
-// to be started in.
-func homeDirectory(env Environment) (string, error) {
-	if env.Home == "" {
-		return "", fault.Unguardedf("HOME is not set, so no home-relative path can be resolved")
-	}
-	if !filepath.IsAbs(env.Home) {
-		return "", fault.Unguardedf("HOME is %q, which is not an absolute path", env.Home)
-	}
-	return filepath.Clean(env.Home), nil
 }
 
 // configPath returns the config file to read: the explicitly named one, or the
@@ -246,7 +229,7 @@ func configPath(override Override, env Environment, home string) (string, error)
 	// rather than the working directory -- so `-c foo.cfg` means `~/foo.cfg`.
 	// That second rule is the surprising one, and it is what makes an
 	// explicitly named config subject to the containment check at all.
-	path := expandTilde(override.Path, home)
+	path := homepath.Expand(override.Path, home)
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(home, path)
 	}
@@ -277,13 +260,13 @@ func discover(env Environment, home string) string {
 	// Skipped when unset OR empty, which appspec/03 states outright. An empty
 	// variable would otherwise expand to the working directory.
 	if env.MackupConfig != "" {
-		candidates = append(candidates, absolute(expandTilde(env.MackupConfig, home)))
+		candidates = append(candidates, homepath.Absolute(homepath.Expand(env.MackupConfig, home)))
 	}
-	xdgBase := env.XDGConfigHome
-	if xdgBase == "" {
-		xdgBase = filepath.Join(home, ".config")
-	}
-	candidates = append(candidates, absolute(filepath.Join(expandTilde(xdgBase, home), xdgConfigName)))
+	// The XDG base is resolved by the rule appspec/03 shares with appspec/05,
+	// so the directory this program looks for a config in and the one the
+	// application database relativizes definition paths against are the same
+	// directory -- see internal/homepath.
+	candidates = append(candidates, filepath.Join(homepath.ConfigHome(env.XDGConfigHome, home), xdgConfigName))
 
 	for _, candidate := range candidates {
 		if existsAsFile(candidate) {
@@ -328,10 +311,10 @@ func readConfig(path string) (string, error) {
 // Checked before anything else in the file is read, including the storage
 // section: the whole point is that this file's contents cannot be trusted to
 // mean what they appear to mean.
-func refuseLegacy(parsed *file) error {
+func refuseLegacy(parsed *ini.File) error {
 	var found []string
 	for _, name := range []string{legacyAllowedSection, legacyIgnoredSection} {
-		if parsed.has(name) {
+		if parsed.Has(name) {
 			found = append(found, "["+name+"]")
 		}
 	}
@@ -352,9 +335,9 @@ func refuseLegacy(parsed *file) error {
 // that column -- except the engine's own inability to find its folder, which
 // internal/storage raises as a guarded one. So this function's own errors and
 // the ones it passes through are deliberately in different regimes.
-func resolveStorage(section *section, home string) (root, directory string, err error) {
+func resolveStorage(section *ini.Section, home string) (root, directory string, err error) {
 	engine := storage.Dropbox
-	if value, present := section.value(engineKey); present {
+	if value, present := section.Value(engineKey); present {
 		named, known := storage.EngineNamed(value)
 		if !known {
 			// appspec/03 gives this diagnostic literally, so it is written
@@ -366,7 +349,7 @@ func resolveStorage(section *section, home string) (root, directory string, err 
 	}
 
 	directory = defaultDirectory
-	if value, present := section.value(directoryKey); present {
+	if value, present := section.Value(directoryKey); present {
 		directory = value
 	}
 	if forbiddenDirectory(directory) {
@@ -377,7 +360,7 @@ func resolveStorage(section *section, home string) (root, directory string, err 
 	// it is "ignored (not required) for the three auto-detected engines", so
 	// a config that sets both an auto-detected engine and a path is not an
 	// error -- the path is simply not used.
-	path, _ := section.value(pathKey)
+	path, _ := section.Value(pathKey)
 
 	root, err = storage.Resolve(engine, home, path)
 	if err != nil {
@@ -422,12 +405,13 @@ func forbiddenDirectory(directory string) bool {
 // case policy: "config application-list keys are case-normalized; definition
 // file paths are case-exact." Both halves matter, and this is the half that
 // lets a user write "Vim" in their config and have it match the key "vim".
-func keySet(section *section) map[string]bool {
-	if section == nil || len(section.keys) == 0 {
+func keySet(section *ini.Section) map[string]bool {
+	keys := section.Keys()
+	if len(keys) == 0 {
 		return nil
 	}
-	set := make(map[string]bool, len(section.keys))
-	for _, key := range section.keys {
+	set := make(map[string]bool, len(keys))
+	for _, key := range keys {
 		set[key] = true
 	}
 	return set
@@ -443,41 +427,6 @@ func sortedKeys(set map[string]bool) []string {
 	return keys
 }
 
-// expandTilde replaces a leading "~" with the home directory.
-//
-// appspec/03 says exactly that and no more, so "~otheruser/x" is NOT expanded
-// to another user's home: it stays a relative path whose first element happens
-// to begin with a tilde, and is resolved against the home directory by the
-// caller like any other relative path. Expanding it would mean reading the
-// password database to produce a config path the specification never mentions.
-func expandTilde(path, home string) string {
-	if path == "~" {
-		return home
-	}
-	if strings.HasPrefix(path, "~/") {
-		return filepath.Join(home, path[2:])
-	}
-	return path
-}
-
-// absolute makes a path absolute against the working directory, leaving an
-// already-absolute one alone.
-//
-// It applies to the two environment-named discovery candidates. appspec/03
-// specifies tilde expansion for MACKUP_CONFIG and nothing about relative
-// values, so this neither invents the home-relative rule the -c option has nor
-// leaves a relative value to be compared against the home directory as though
-// it were absolute -- which is how a containment check silently passes.
-func absolute(path string) string {
-	if filepath.IsAbs(path) {
-		return filepath.Clean(path)
-	}
-	if resolved, err := filepath.Abs(path); err == nil {
-		return resolved
-	}
-	return filepath.Clean(path)
-}
-
 // existsAsFile reports whether a path is there and is a regular file.
 //
 // appspec/03's discovery says "the first that exists as a regular file", and
@@ -491,27 +440,4 @@ func absolute(path string) string {
 func existsAsFile(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.Mode().IsRegular()
-}
-
-// insideHome reports whether a resolved path lies within the home directory.
-//
-// The comparison is lexical, on cleaned absolute paths, and deliberately does
-// not resolve symlinks. appspec/03 states the check as being about the
-// resolved config PATH -- "the finally-resolved config path must lie inside
-// the home directory" -- and a check that followed links would refuse a home
-// directory that is itself a symlink, which is an ordinary arrangement.
-//
-// A path equal to the home directory counts as inside it. That case cannot
-// arise for a config file, which must be a regular file, but the predicate
-// should not claim otherwise.
-func insideHome(path, home string) bool {
-	relative, err := filepath.Rel(home, path)
-	if err != nil {
-		return false
-	}
-	// The escape is the path ELEMENT "..", not the prefix: a file named
-	// "~/..config" produces the relative path "..config", which a HasPrefix on
-	// ".." rejects as outside the home directory it is plainly inside. Dotted
-	// names are what this program manages, so that is not a corner.
-	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
