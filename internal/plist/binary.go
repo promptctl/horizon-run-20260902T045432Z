@@ -95,35 +95,62 @@ func parseBinary(data []byte) (any, error) {
 		refSize:     refSize,
 		count:       int(objectCount),
 		open:        map[int]bool{},
-		budget:      maxValues,
+		budget:      maxBytes,
 	}
 	return reader.object(int(topObject))
 }
 
-// maxValues bounds how many values one binary property list may expand to.
+// maxBytes bounds how much memory one binary property list may make this
+// reader allocate, and referenceCost is what one declared element of a
+// container costs against it.
 //
 // The depth guard is not enough on its own, because the blow-up this format
 // allows is not depth. The object table is flat and a reference may name any
-// entry, so one object can be referenced from several places at once; that is
-// not a cycle and it is not deep, and the tree it expands to is the PRODUCT of
-// the sharing rather than the sum. Forty two-element arrays, each pointing
-// twice at the next, are 198 bytes that expand to 2^39 values -- a sync run
-// that never returns, waiting at a prompt.
+// entry, so every allocation this reader makes is sized by a number the file
+// declares -- an element count, a string length -- and any of them may be
+// spent many times over. Three shapes, all measured, none reachable by the
+// single-byte corruption the case above sweeps with:
 //
-// Bounding the count of values resolved bounds both halves of that: the work
-// this reader does, and the size of the tree Format then walks to produce the
-// diff. It has to be one bound rather than two, because a reader that returned
-// the shared graph quickly would move the same hang into the renderer, which
-// visits a shared subtree once per reference.
+//   - Forty two-element arrays, each naming the next one twice. Not a cycle,
+//     and forty deep, but the tree it expands to doubles per level: 198 bytes
+//     that never finish parsing.
+//   - Five hundred nested arrays each DECLARING twenty thousand elements. A
+//     count only has to fit the objects region, which every container can see
+//     to the end of, and each level allocates before it recurses, so all five
+//     hundred allocations are live at once: 45 KiB that allocates 239 MiB.
+//   - One array of twenty thousand references, all naming one twenty-thousand
+//     byte string, which is materialised again per reference: 60 KiB that
+//     allocates 391 MiB, and parses successfully. Quadratic in the file's
+//     length -- a megabyte of it is a hundred gigabytes.
+//
+// So the bound is not on any one of those, and it is not a count of objects
+// resolved: it is charged wherever a file-declared number sizes an
+// allocation, before that allocation happens. That is the invariant, and it
+// covers all three shapes and anything else of the form.
+//
+// The unit is bytes of memory, so the worst case IS this constant rather than
+// something derived from it -- which is the whole reason to count in bytes
+// when the two things being charged for cost such different amounts. A
+// declared reference costs its eight-byte table entry plus the sixteen-byte
+// interface value it will hold, rounded to thirty-two so that a dictionary,
+// which declares two references per pair, over-pays for its map entry rather
+// than under-paying. A byte of scalar content costs one.
+//
+// Sixty-four mebibytes admits any preference file this program plausibly meets
+// -- a plist costs at most about twenty-five times its own length, so this is
+// every file up to a couple of megabytes, and the ones it syncs are kilobytes
+// -- and a document past it falls through to appspec/06's byte-for-byte arm,
+// which is the honest answer for a structure no one would read a diff of.
 //
 // Deliberately a constant rather than something scaled to the file's length.
 // CoreFoundation uniques equal objects as it writes, so a file legitimately
 // holding a thousand references to one shared dictionary expands to far more
-// values than it has bytes, and a length-relative budget would refuse real
-// preference files. This is three orders of magnitude above what one holds,
-// and a document past it falls through to appspec/06's byte-for-byte arm --
-// which is the honest answer for a structure no one would read a diff of.
-const maxValues = 1 << 20
+// than it has bytes, and a length-relative budget would refuse real files.
+const (
+	maxBytes      = 64 << 20
+	referenceCost = 32
+	utf16Cost     = 16
+)
 
 // A binaryReader resolves object references against one file's object table.
 type binaryReader struct {
@@ -138,10 +165,25 @@ type binaryReader struct {
 	// recursion below would otherwise not terminate -- a hang inside a sync
 	// run, which is worse than either of appspec/06's outcomes.
 	open map[int]bool
-	// budget is how many more values this document may expand to; see
-	// maxValues. Spent per resolved object rather than per table entry,
-	// because it is the expansion that is bounded, not the table.
+	// budget is how many more bytes this document may allocate; see maxBytes.
 	budget int
+}
+
+// spend charges units against what this document is allowed to expand to.
+//
+// Called at every point where a number the file declares sizes an allocation,
+// and BEFORE that allocation: a bound checked afterwards is a bound that has
+// already spent the memory it was supposed to refuse.
+func (r *binaryReader) spend(units, each int) error {
+	// Divided rather than multiplied: units is a number the file declares, and
+	// units*each overflows int on a 32-bit host for a count the checks above
+	// still admit -- wrapping a charge too large to pay into a small one that
+	// passes, which is the bug this whole budget exists to prevent.
+	if units < 0 || units > r.budget/each {
+		return notAPlist("property list expands past the %d bytes this reader allocates for one", maxBytes)
+	}
+	r.budget -= units * each
+	return nil
 }
 
 // offsetOf returns the byte offset of object ref within the file.
@@ -170,9 +212,6 @@ func (r *binaryReader) object(ref int) (any, error) {
 	// size is the nesting depth and no separate counter is needed.
 	if len(r.open) >= maxDepth {
 		return nil, notAPlist("property list nests more than %d deep", maxDepth)
-	}
-	if r.budget--; r.budget < 0 {
-		return nil, notAPlist("property list expands to more than %d values", maxValues)
 	}
 	offset, err := r.offsetOf(ref)
 	if err != nil {
@@ -282,12 +321,18 @@ func (r *binaryReader) sizedObject(ref int, kind byte, count int, body []byte) (
 		if count > len(body) {
 			return nil, notAPlist("object #%d declares %d bytes of data and has %d", ref, count, len(body))
 		}
+		if err := r.spend(count, 1); err != nil {
+			return nil, err
+		}
 		// Copied, so the returned value does not alias the file's bytes and
 		// cannot be changed under a caller holding it.
 		return append([]byte(nil), body[:count]...), nil
 	case 0x5:
 		if count > len(body) {
 			return nil, notAPlist("object #%d declares %d ASCII characters and has %d", ref, count, len(body))
+		}
+		if err := r.spend(count, 1); err != nil {
+			return nil, err
 		}
 		return string(body[:count]), nil
 	case 0x6:
@@ -298,6 +343,9 @@ func (r *binaryReader) sizedObject(ref int, kind byte, count int, body []byte) (
 		// UTF-8 string model the XML side produces.
 		if count > len(body)/2 {
 			return nil, notAPlist("object #%d declares %d UTF-16 characters and has %d bytes", ref, count, len(body))
+		}
+		if err := r.spend(count, utf16Cost); err != nil {
+			return nil, err
 		}
 		units := make([]uint16, count)
 		for i := range units {
@@ -358,6 +406,9 @@ func (r *binaryReader) dict(ref, count int, body []byte) (any, error) {
 func (r *binaryReader) references(ref, count int, body []byte) ([]int, error) {
 	if count < 0 || count > len(body)/r.refSize {
 		return nil, notAPlist("object #%d declares %d references and does not hold them", ref, count)
+	}
+	if err := r.spend(count, referenceCost); err != nil {
+		return nil, err
 	}
 	refs := make([]int, count)
 	for i := range refs {

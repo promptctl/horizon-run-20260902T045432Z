@@ -1,9 +1,12 @@
 package plist
 
 import (
+	"encoding/binary"
 	"errors"
+	"math"
 	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -322,6 +325,174 @@ func TestATrailerThatWrapsTheOffsetTableIsRefusedRatherThanCrashing(t *testing.T
 		t.Errorf("an offset table at the top of the range parsed as %#v", value)
 	} else if !errors.Is(err, ErrNotAPlist) {
 		t.Errorf("Parse: %v, want an ErrNotAPlist", err)
+	}
+}
+
+// allocatedParsing reports the megabytes Parse allocates on data, with the
+// value it returned.
+//
+// Measured rather than inferred, because the two cases below are about
+// allocation and one of them returns an error either way: a nested chain of
+// oversized containers is refused for its DEPTH whether or not the counts it
+// declares are charged for, so a case that asserted only the error would have
+// been green while the reader allocated a quarter of a gigabyte on the way to
+// producing it.
+func allocatedParsing(t *testing.T, data []byte) (uint64, error) {
+	t.Helper()
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, err := Parse(data)
+	runtime.ReadMemStats(&after)
+	return (after.TotalAlloc - before.TotalAlloc) >> 20, err
+}
+
+// binaryTrailer builds the thirty-two-byte trailer for a file with width-byte
+// offsets and references, count objects, the top object #0, and its offset
+// table at table.
+//
+// The counts go in through PutUint64 rather than by poking the low bytes,
+// which is how the cases below were first written and how one of them was
+// silently wrong: a fixture whose offset table sat past 65535 had its position
+// truncated into two bytes, so the file was malformed for an unrelated reason
+// and the case passed while observing nothing. Injection is what surfaced it.
+func binaryTrailer(width, count, table int) []byte {
+	trailer := make([]byte, trailerSize)
+	trailer[offsetSizeAt] = byte(width)
+	trailer[refSizeAt] = byte(width)
+	binary.BigEndian.PutUint64(trailer[objectCountAt:], uint64(count))
+	binary.BigEndian.PutUint64(trailer[offsetTableAt:], uint64(table))
+	return trailer
+}
+
+func TestContainersThatDeclareMoreThanTheyHoldAreRefusedBeforeTheyAllocate(t *testing.T) {
+	// A count is a number the file declares, and the only thing it has to fit
+	// is the objects region -- which every container can see to the end of,
+	// wherever it sits. So each level here declares twenty thousand elements
+	// in a forty-five-kilobyte file and is within its rights; each allocates
+	// for them before recursing, and none of it unwinds until the depth guard
+	// fires five hundred levels down. Unbudgeted, that is 239 MiB from 45 KiB,
+	// and it scales with the file: a megabyte of the same layout is gigabytes,
+	// which is a sync run killed rather than a comparison declined.
+	const levels = 512
+	const declared = 20000
+	var objects []byte
+	offsets := make([]int, levels)
+	for i := 0; i < levels; i++ {
+		offsets[i] = len(binaryMagic) + len(objects)
+		if i == levels-1 {
+			objects = append(objects, 0xA0)
+			break
+		}
+		// 0xAF is an array whose count escapes to the integer object that
+		// follows, and 0x12 is that integer, four bytes wide.
+		objects = append(objects, 0xAF, 0x12,
+			byte(declared>>24), byte(declared>>16), byte(declared>>8), byte(declared&0xFF),
+			byte((i+1)>>8), byte(i+1))
+	}
+	// Room enough that the declared references genuinely fit the region, so
+	// the case is refused by the budget rather than by the check above it.
+	objects = append(objects, make([]byte, declared*2+16)...)
+
+	greedy := append([]byte(nil), binaryMagic...)
+	greedy = append(greedy, objects...)
+	table := len(greedy)
+	for _, offset := range offsets {
+		greedy = append(greedy, byte(offset>>8), byte(offset))
+	}
+	greedy = append(greedy, binaryTrailer(2, len(offsets), table)...)
+
+	allocated, err := allocatedParsing(t, greedy)
+	if err == nil {
+		t.Error("a chain of containers each declaring twenty thousand elements parsed")
+	} else if !errors.Is(err, ErrNotAPlist) {
+		t.Errorf("Parse: %v, want an ErrNotAPlist", err)
+	}
+	// Generously above what the budget permits and an order of magnitude below
+	// what the defect produced, so the case says which of the two happened
+	// without being sensitive to how Go sizes a slice.
+	if allocated > maxBytes>>20+32 {
+		t.Errorf("Parse allocated %d MiB on a %d-byte file", allocated, len(greedy))
+	}
+}
+
+func TestAScalarReferencedManyTimesIsRefusedRatherThanCopiedEachTime(t *testing.T) {
+	// The same defect without the nesting, and the one that does not even
+	// announce itself: one array of twenty thousand references, every one
+	// naming the same twenty-thousand-unit scalar, which is materialised
+	// afresh at each reference because nothing here memoises. Unbudgeted this
+	// PARSES -- 60 KiB in, 391 MiB out -- and Format then renders twenty
+	// thousand lines of twenty thousand characters. It is quadratic in the
+	// file's length, so a megabyte of it is a hundred gigabytes.
+	//
+	// All three counted scalar kinds, because they are three separate arms
+	// with three separate allocations and a charge belongs in each. Injection
+	// is how that was learned: the case was first written for the ASCII arm
+	// alone, and deleting the charge from either of the other two left it
+	// green.
+	const references = 20000
+	const length = 20000
+	for name, scalar := range map[string]struct {
+		marker byte
+		bytes  int
+	}{
+		"data":   {0x4F, length},
+		"ASCII":  {0x5F, length},
+		"UTF-16": {0x6F, length * 2},
+	} {
+		// 0xAF and the scalar markers escape their count into the four-byte
+		// integer object 0x12 that follows.
+		array := []byte{0xAF, 0x12, 0, 0, byte(references >> 8), byte(references & 0xFF)}
+		for i := 0; i < references; i++ {
+			array = append(array, 0, 1)
+		}
+		content := []byte{scalar.marker, 0x12, 0, 0, byte(length >> 8), byte(length & 0xFF)}
+		content = append(content, make([]byte, scalar.bytes)...)
+
+		shared := append([]byte(nil), binaryMagic...)
+		first := len(shared)
+		shared = append(shared, array...)
+		second := len(shared)
+		shared = append(shared, content...)
+		table := len(shared)
+		for _, offset := range []int{first, second} {
+			shared = append(shared, byte(offset>>8), byte(offset))
+		}
+		shared = append(shared, binaryTrailer(2, 2, table)...)
+
+		allocated, err := allocatedParsing(t, shared)
+		if err == nil {
+			t.Errorf("twenty thousand references to one %s scalar parsed", name)
+		} else if !errors.Is(err, ErrNotAPlist) {
+			t.Errorf("%s: Parse: %v, want an ErrNotAPlist", name, err)
+		}
+		// Generously above what the budget permits and far below what the
+		// defect produced, so the case says which of the two happened without
+		// being sensitive to how Go sizes an allocation.
+		if allocated > maxBytes>>20+32 {
+			t.Errorf("%s: Parse allocated %d MiB on a %d-byte file", name, allocated, len(shared))
+		}
+	}
+}
+
+func TestAChargeTooLargeToPayIsRefusedRatherThanWrapped(t *testing.T) {
+	// spend divides rather than multiplying, and this is the only thing that
+	// can see it: a charge whose product overflows int wraps to a small number
+	// and PASSES a check written the obvious way, which is the same defect the
+	// budget exists to prevent, one level down.
+	//
+	// Called directly because Parse cannot reach it on this host -- count is
+	// bounded by the file's length, so overflowing a 64-bit int would take an
+	// exabyte -- while on a 32-bit host, where int is 32 bits, a 64 MiB
+	// property list reaches it and the suite does not run there. Testing the
+	// helper's contract is what is available; the alternative is a guard
+	// nothing observes.
+	reader := &binaryReader{budget: maxBytes}
+	if err := reader.spend(math.MaxInt/4, referenceCost); err == nil {
+		t.Error("a charge whose product overflows int was paid out of a 64 MiB budget")
+	}
+	if reader.budget != maxBytes {
+		t.Errorf("budget = %d after a refused charge, want %d", reader.budget, maxBytes)
 	}
 }
 

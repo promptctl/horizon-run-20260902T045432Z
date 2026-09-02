@@ -1179,8 +1179,16 @@ MUTATIONS = [
  #       TestADeeplyNestedPropertyListIsRefusedRatherThanCrashing
  #   the offset table start is unbounded          the fit check written as an addition
  #       TestATrailerThatWrapsTheOffsetTableIsRefusedRatherThanCrashing
- #   the value budget is removed                  object's r.budget check deleted
- #       TestABinaryPropertyListThatSharesOneSubtreeManyTimesIsRefused
+ #   the reference charge is removed              references' spend deleted
+ #       TestContainersThatDeclareMoreThanTheyHoldAreRefusedBeforeTheyAllocate
+ #   the data charge is removed                   the 0x4 arm's spend deleted
+ #       TestAScalarReferencedManyTimesIsRefusedRatherThanCopiedEachTime
+ #   the string charge is removed                 the 0x5 arm's spend deleted
+ #       TestAScalarReferencedManyTimesIsRefusedRatherThanCopiedEachTime
+ #   the UTF-16 charge is removed                 the 0x6 arm's spend deleted
+ #       TestAScalarReferencedManyTimesIsRefusedRatherThanCopiedEachTime
+ #   the charge multiplies instead of dividing    spend's budget/each -> units*each
+ #       TestAChargeTooLargeToPayIsRefusedRatherThanWrapped
  #
  # One entry has no killing CASE and is listed with what it has, because the
  # alternative is to leave it out and let the next reader think it was missed:
