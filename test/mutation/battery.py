@@ -376,10 +376,16 @@ MUTATIONS = [
 
  # Snapshot's permission branch had no case at all, so ExpectUnchanged
  # compared two records of an unlistable directory that were equal because
- # both were blind. Errorf -> Logf leaves the mechanism standing and the
- # report silent, which is what the defect actually looked like.
- ("the blind-directory report is downgraded to a log", [repl(H,
-   'w.t.Errorf("%s could not be listed', 'w.t.Logf("%s could not be listed')],
+ # both were blind. Dropping the report leaves the collection loop standing
+ # and says nothing, which is what the defect actually looked like.
+ #
+ # Written first as Errorf -> Logf, which is the obvious spelling and does
+ # not compile: w.t is the reporter interface captureReport swaps in, and it
+ # carries Helper, Errorf and Fatalf but no Logf. Rule 1 caught it as
+ # DOES-NOT-COMPILE, which is what rule 1 is for.
+ ("the blind-directory report is dropped", [repl(H,
+   'w.t.Errorf("%s could not be listed, so this assertion is blind to a file rewritten in place inside it; make the fixture readable, or assert on what is in there directly", path)',
+   '_ = path')],
    "no report names home/locked"),
 
  ("moduleRoot walks up from runtime.Caller", [
