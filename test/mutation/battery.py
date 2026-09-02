@@ -27,8 +27,9 @@ Three rules it enforces, each of which it once got wrong:
   * A mutation may assert the diagnostic it expects, not just a non-zero exit,
     so that a kill by some unrelated case does not count as coverage.
 
-The tree must be committed before running this: it restores from a copy taken
-at startup, and a crash mid-run leaves the mutation in place.
+The tree must be committed before running this. It refuses to start on a dirty
+one, and restores in a finally, so an interrupt or an exception puts the
+sources back rather than leaving a mutation in the tree.
 """
 
 import os, shutil, subprocess, sys, tempfile
@@ -48,6 +49,15 @@ A = "internal/app/app.go"
 X = "test/conformance/harness_unix_test.go"
 P = "internal/cli/parse.go"
 V = "internal/version/version.go"
+
+# SURVIVES marks an entry that must NOT break the gate. Most entries are
+# defects the suite has to catch; these are the opposite -- correct code that a
+# guard once rejected. The doc guard demanded a bare name and so failed on
+# "// A World is one throwaway environment", which is idiomatic Go and how the
+# standard library writes doc comments. A guard that reddens the gate on
+# correct code is a defect too, and nothing expressed it until this existed.
+SURVIVES = object()
+
 
 def repl(f, old, new):
     return ("repl", f, old, new)
@@ -161,7 +171,22 @@ MUTATIONS = [
    "func touchBuildDir(dir string) {\n\tnow := time.Now()\n\tos.Chtimes(dir, now, now)\n}",
    "func touchBuildDir(dir string) {\n\t_ = dir\n}")],
    None),
+
+ ("idiomatic article before the name is accepted", [repl(H,
+   "// World is one throwaway environment: a home directory, an environment",
+   "// A World is one throwaway environment: a home directory, an environment")],
+   SURVIVES),
+
+ ("a one-name parenthesized block may carry a collective comment", [repl(H,
+   "// buildDirPrefix names this suite's build directories, so that a later run can\n// recognize one an earlier run abandoned.\nconst buildDirPrefix = \"macklebox-conformance-bin-\"",
+   "// Naming of this suite's build directories, so that a later run can\n// recognize one an earlier run abandoned.\nconst (\n\tbuildDirPrefix = \"macklebox-conformance-bin-\"\n)")],
+   SURVIVES),
+
+ ("the version banner gains a suffix", [repl(V,
+   'return "Mackup " + String()', 'return "Mackup " + String() + "-extra"')],
+   None),
 ]
+
 
 
 
@@ -200,10 +225,19 @@ def apply(edits):
         touched.add(f)
     return touched, None
 
+# A dirty tree cannot be told apart from a run this script corrupted, and
+# restore() would overwrite uncommitted work with the startup copy. Refuse.
+dirty = subprocess.run(["git", "status", "--porcelain"], cwd=REPO,
+                       capture_output=True, text=True).stdout.strip()
+if dirty:
+    sys.exit("battery: the working tree is dirty; commit or stash first, since "
+             "this rewrites sources in place and restores from a copy taken now:\n" + dirty)
+
 snapshot_tree()
 only = sys.argv[1:]
 results = []
-for entry in MUTATIONS:
+try:
+  for entry in MUTATIONS:
     name, edits = entry[0], entry[1]
     expect = entry[2] if len(entry) > 2 else None
     if only and name not in only:
@@ -218,6 +252,15 @@ for entry in MUTATIONS:
     if rc != 0:
         results.append((name, "DOES-NOT-COMPILE", out[-400:])); print("DOES-NOT-COMPILE  %s" % name, flush=True); print(out[-800:], flush=True); continue
     rc, out = run("make check")
+    if expect is SURVIVES:
+        if rc != 0:
+            broke = sorted({l.split()[2] for l in out.splitlines() if l.strip().startswith("--- FAIL:")})
+            results.append((name, "FALSE-POSITIVE", ",".join(broke)))
+            print("FALSE-POSITIVE  %s: the gate rejected correct code (%s)" % (name, ",".join(broke)), flush=True)
+        else:
+            results.append((name, "survives", "as required"))
+            print("survives  %-42s (required: the gate must not reject this)" % name, flush=True)
+        continue
     if rc == 0:
         results.append((name, "SURVIVED", "")); print("SURVIVED (BATTERY FAILURE)  %s" % name, flush=True); continue
     failed = sorted({l.split()[2] for l in out.splitlines() if l.strip().startswith("--- FAIL:")})
@@ -239,11 +282,16 @@ for entry in MUTATIONS:
     results.append((name, "killed", ",".join(failed) + conf))
     print("killed  %-42s by %s%s" % (name, ",".join(failed) or "(build/gate)", conf), flush=True)
 
-restore()
+finally:
+  # In a finally, so Ctrl-C during a run that takes minutes -- the expected way
+  # to abort one -- puts the sources back instead of leaving "Usage!" in
+  # internal/cli/usage.go for someone to find later.
+  restore()
+
 rc, out = run("make check")
 print("\n=== tree restored, make check exit=%d ===" % rc, flush=True)
 print("\n=== SUMMARY: %d run ===" % len(results), flush=True)
-bad = [r for r in results if r[1] != "killed"]
+bad = [r for r in results if r[1] not in ("killed", "survives")]
 for r in results:
     print("  %-16s %s" % (r[1], r[0]), flush=True)
 print("\nNOT KILLED: %d" % len(bad), flush=True)

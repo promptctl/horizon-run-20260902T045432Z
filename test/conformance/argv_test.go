@@ -63,7 +63,7 @@ func TestVersionReportsTheFallbackTokenForAnUninstalledBuild(t *testing.T) {
 	// gets, not one built beside it.
 	NewWorld(t).Run("--version").
 		ExpectExit(0).
-		ExpectStdout("Mackup unknown")
+		ExpectStdoutLine("Mackup unknown")
 }
 
 func TestVersionReportsTheFallbackTokenForAVCSStampedBuild(t *testing.T) {
@@ -78,7 +78,7 @@ func TestVersionReportsTheFallbackTokenForAVCSStampedBuild(t *testing.T) {
 	world.UseBinary(requireVCSStampedBuild(t))
 	world.Run("--version").
 		ExpectExit(0).
-		ExpectStdout("Mackup unknown")
+		ExpectStdoutLine("Mackup unknown")
 }
 
 func TestVersionReportsItsOwnVersionWhenTheBuildCarriesOne(t *testing.T) {
@@ -91,7 +91,7 @@ func TestVersionReportsItsOwnVersionWhenTheBuildCarriesOne(t *testing.T) {
 	world.UseStampedBinary()
 	world.Run("--version").
 		ExpectExit(0).
-		ExpectStdout("Mackup " + stampedVersion)
+		ExpectStdoutLine("Mackup " + stampedVersion)
 }
 
 func TestAReleaseBuildOutranksTheProvenanceOfItsCheckout(t *testing.T) {
@@ -113,7 +113,7 @@ func TestAReleaseBuildOutranksTheProvenanceOfItsCheckout(t *testing.T) {
 	world.UseBinary(requireStampedVCSBuild(t))
 	world.Run("--version").
 		ExpectExit(0).
-		ExpectStdout("Mackup " + stampedVersion).
+		ExpectStdoutLine("Mackup " + stampedVersion).
 		ExpectSilentStderr()
 }
 
@@ -682,11 +682,11 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 						continue
 					}
 					checked++
-					opening := words[0]
+					opening := openingName(words)
 
-					// One name: the convention applies in full, and the tree
-					// follows it everywhere.
-					if len(names) == 1 {
+					// One name, written on its own: the convention applies in
+					// full, and the tree follows it everywhere.
+					if !documented.collective {
 						if opening != names[0] {
 							t.Errorf("%s: the doc comment on %s opens with %q; either it belongs to something else and a declaration was inserted under it, or it does not follow the convention the rest of the tree does", relative, names[0], opening)
 						}
@@ -700,6 +700,16 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 					// is open with the name of something declared elsewhere in
 					// the file, which is what a comment that has lost its
 					// declaration looks like.
+					//
+					// "Grouped" is decided structurally -- a parenthesized
+					// block, or one specification introducing several names --
+					// and not by counting the names that came out. Counting
+					// made the exemption above silently not apply to a
+					// `var (...)` block declaring exactly one name, which is
+					// the opposite of what this comment promises. Not
+					// reachable in the tree today; enumerated here because
+					// this guard has had three blind spots and glossing its
+					// edges is how they got in.
 					if slices.Contains(names, opening) {
 						continue
 					}
@@ -774,10 +784,42 @@ func declaredNames(file *ast.File) map[string]string {
 	return names
 }
 
-// documented pairs a doc comment with the names it is attached to.
+// documented pairs a doc comment with the names it is attached to, and says
+// whether those names were written as a group -- a parenthesized block, or one
+// specification introducing several names -- since a group is allowed a
+// collective comment and a lone declaration is not.
 type documented struct {
-	names []string
-	doc   *ast.CommentGroup
+	names      []string
+	doc        *ast.CommentGroup
+	collective bool
+}
+
+// leadingArticles are the words a doc comment may open with before the name.
+//
+// "// A World is one throwaway environment" is idiomatic Go -- the standard
+// library writes doc comments this way constantly ("An Encoder writes JSON
+// values to an output stream") -- and demanding the bare name rejected it,
+// turning the gate red on a contributor for following the convention
+// correctly. Verified, by rewording World's own comment that way and watching
+// make check fail.
+//
+// The article is skipped in the grouped branch too, not only the single-name
+// one, and it cuts both ways there: it catches "// A World is ..." orphaned
+// onto a block, and it can misread a collective comment that happens to begin
+// "The World and ..." as that orphan. The false positive fails loudly and is
+// fixed by rewording; the false negative is silent. That is the trade this
+// suite makes everywhere else, so it is made the same way here.
+//
+// Trailing punctuation is deliberately NOT accommodated: "// String() returns"
+// is not the convention, and a red gate on it is the right answer.
+var leadingArticles = map[string]bool{"A": true, "An": true, "The": true}
+
+// openingName is the name a doc comment opens with, looking past an article.
+func openingName(words []string) string {
+	if len(words) > 1 && leadingArticles[words[0]] {
+		return words[1]
+	}
+	return words[0]
 }
 
 // documentedDeclarations returns every doc comment a declaration carries,
@@ -813,10 +855,10 @@ func documentedDeclarations(declaration ast.Decl) []documented {
 			// to the single-name convention even inside a block, where the
 			// collective comment is not.
 			if specDoc != nil && len(specNames) > 0 {
-				found = append(found, documented{names: specNames, doc: specDoc})
+				found = append(found, documented{names: specNames, doc: specDoc, collective: len(specNames) > 1})
 			}
 		}
-		return append(found, documented{names: names, doc: d.Doc})
+		return append(found, documented{names: names, doc: d.Doc, collective: d.Lparen.IsValid() || len(names) > 1})
 	}
 	return nil
 }

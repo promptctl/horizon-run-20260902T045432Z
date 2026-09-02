@@ -924,6 +924,23 @@ func (r Result) ExpectStderrLine(want string) Result {
 	return r
 }
 
+// ExpectStdoutLine asserts stdout is exactly one line, equal to want. The
+// stdout mirror of ExpectStderrLine, for the literal tokens appspec/00 names.
+//
+// Contains is not enough for a value the spec gives literally. Every case
+// asserting the version VALUE used ExpectStdout, and ExpectVersionLine pins
+// only the shape -- its \S+ matches a suffixed token just as happily -- so a
+// Banner() returning "Mackup unknown-extra" passed the entire black-box suite
+// and was caught only by internal/version's unit test. Observed. That is the
+// same vacuity round 21 closed for the line's shape, left open for its value.
+func (r Result) ExpectStdoutLine(want string) Result {
+	r.w.t.Helper()
+	if r.Stdout != want+"\n" {
+		r.w.t.Errorf("%s stdout = %q, want exactly %q", r.invocation(), r.Stdout, want+"\n")
+	}
+	return r
+}
+
 // versionLine is the whole of stdout for a --version run: the banner,
 // one line, nothing after it.
 var versionLine = regexp.MustCompile(`^Mackup \S+\n$`)
