@@ -398,9 +398,14 @@ MUTATIONS = [
    '\t\t\treturn err')],
    "snapshotting the scratch root"),
 
+ # Anchored on the predicate rather than the whole row: the row carries a
+ # long message and a closure, both of which have already been rewritten once
+ # (BROKEN-ANCHOR, the next full run after they were), while the predicate is
+ # the part that decides anything. `false` disables this shape alone and
+ # leaves the other one reporting, which is what separates this entry from
+ # "the blindness scan matches anywhere in the record".
  ("the unstatable-entry blindness goes unreported", [repl(H,
-   '\t\t{entryUnstatable, "could not be examined at all -- its mode, type and modification time are all unknown -- so this assertion is blind to every change to it but its removal; make its parent directory searchable in the fixture"},\n',
-   '')],
+   'strings.HasPrefix(record, entryUnstatable)', 'false')],
    "no report names home/sealed/cfg"),
 
  # The unreadable-file record's size, and the anchoring of the blindness
@@ -483,7 +488,16 @@ def run(cmd):
         out, err = p.communicate()
         return 124, (out or "") + (err or "") + "\nbattery: %r did not finish within %ds" % (cmd, RUN_BOUND)
 
-def apply(edits):
+def apply(edits, write=True):
+    """Resolve every edit's anchors and, unless write is False, apply them.
+
+    write=False is what --anchors uses. It has to touch nothing: the moment an
+    anchor check is worth running is right after editing a file in FILES, when
+    the tree is dirty by definition, and a mode that rewrote sources there
+    would be asking to lose uncommitted work to an interrupt. Resolving is all
+    the check needs -- an anchor is either found exactly where the entry says
+    or it is not, and neither answer depends on writing the result.
+    """
     touched = set()
     for kind, f, a, b in edits:
         path = os.path.join(REPO, f)
@@ -516,7 +530,8 @@ def apply(edits):
                               "the last in the file"
                               % (a[:40], len(strays), f, strays[0][:60]))
             src = src[:i] + b
-        open(path, "w").write(src)
+        if write:
+            open(path, "w").write(src)
         touched.add(f)
     return touched, None
 
@@ -528,6 +543,35 @@ untracked = sorted({edit[1] for entry in MUTATIONS for edit in entry[1]} - set(F
 if untracked:
     sys.exit("battery: these mutations edit files that are not in FILES, so they "
              "would be neither backed up nor restored: " + ", ".join(untracked))
+
+# --anchors resolves every edit against the clean tree and exits, without
+# running the gate once. Seconds rather than an hour.
+#
+# It exists because an anchor breaking is not a rare event: the two rounds
+# before this one each rewrote a line some entry pointed at, and both times
+# the tree was already committed and pushed before the full run reported
+# BROKEN-ANCHOR. Nothing in `make check` knows this file exists -- it is not
+# in FILES, and mutating it dirties the tree -- so there is no other moment
+# that reminds you. Run it after any edit to a file in FILES.
+#
+# It reuses apply() rather than reimplementing the anchor rules, because a
+# second copy of "the anchor must occur exactly once" is a copy that drifts,
+# and drifting is what this mode is for. It passes write=False, so it touches
+# no file and needs neither a clean tree nor a restore -- which matters,
+# because the moment this check is worth running is right after an edit, when
+# the tree is dirty by definition. It therefore runs BEFORE the dirty-tree
+# refusal below, deliberately.
+only = sys.argv[1:]
+if "--anchors" in only:
+    broken = []
+    for entry in MUTATIONS:
+        touched, why = apply(entry[1], write=False)
+        if touched is None:
+            broken.append((entry[0], why))
+    for name, why in broken:
+        print("BROKEN-ANCHOR  %s: %s" % (name, why))
+    print("=== %d entries, %d with a broken anchor ===" % (len(MUTATIONS), len(broken)))
+    sys.exit(1 if broken else 0)
 
 # A dirty tree cannot be told apart from a run this script corrupted, and
 # restore() would overwrite uncommitted work with the startup copy. Refuse.
@@ -545,7 +589,6 @@ snapshot_tree()
 # typo, or a wrapper naming a mutation that has since been renamed, got a green
 # light. Both halves are needed: the name check catches the typo, and the empty
 # check catches a MUTATIONS list that has been emptied or filtered to nothing.
-only = sys.argv[1:]
 known = {entry[0] for entry in MUTATIONS}
 unknown = [name for name in only if name not in known]
 if unknown:
