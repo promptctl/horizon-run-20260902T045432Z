@@ -156,3 +156,43 @@ func TestParseDoubleDashEndsOptions(t *testing.T) {
 		t.Errorf("Parse = (%v, %q), want (show, -weird-app-key)", inv.Cmd, inv.Application)
 	}
 }
+
+func TestParseHelpAndVersionStopTheScan(t *testing.T) {
+	// appspec/02 gives --help and --version their own usage lines and says
+	// each takes no other action, so nothing after one is examined.
+	for _, argv := range [][]string{
+		{"--help", "--nope"},
+		{"--version", "-z"},
+		{"-h", "frobnicate", "extra"},
+	} {
+		inv, err := Parse(argv)
+		if err != nil {
+			t.Errorf("Parse(%q) = error %v, want the help/version path", argv, err)
+			continue
+		}
+		if !inv.Opts.Help && !inv.Opts.Version {
+			t.Errorf("Parse(%q) set neither Help nor Version", argv)
+		}
+	}
+}
+
+func TestParseHelpBeforeAnOptionArgumentIsStillAnArgument(t *testing.T) {
+	// -c takes an argument, so "--help" here is that argument, not the flag.
+	inv, err := Parse([]string{"-c", "--help", "list"})
+	if err != nil {
+		t.Fatalf("Parse = error %v", err)
+	}
+	if inv.Opts.Help {
+		t.Error("Help is set, want --help consumed as the --config-file argument")
+	}
+	if inv.Opts.ConfigFile != "--help" || inv.Cmd != CmdList {
+		t.Errorf("Parse = (config %q, cmd %v), want (--help, list)", inv.Opts.ConfigFile, inv.Cmd)
+	}
+}
+
+func TestParseStillRejectsABadOptionSeenBeforeHelp(t *testing.T) {
+	var usageErr *UsageError
+	if _, err := Parse([]string{"--nope", "--help"}); !errors.As(err, &usageErr) {
+		t.Errorf("Parse(--nope --help) = %v, want a *UsageError: --nope genuinely came first", err)
+	}
+}

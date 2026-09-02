@@ -6,7 +6,10 @@
 // trailer as "Mackup <version>".
 package version
 
-import "runtime/debug"
+import (
+	"runtime/debug"
+	"strings"
+)
 
 // Fallback is the stable token reported when no package version is available
 // (running from an uninstalled tree). appspec/00-overview.md names the literal
@@ -23,14 +26,23 @@ var value string
 // String returns the resolved version string.
 func String() string {
 	if value != "" {
-		return value
+		return normalize(value)
 	}
 	if bi, ok := debug.ReadBuildInfo(); ok {
 		if v := bi.Main.Version; v != "" && v != "(devel)" {
-			return v
+			return normalize(v)
 		}
 	}
 	return Fallback
+}
+
+// normalize drops the "v" that a Go module version always carries
+// (golang.org/ref/mod: a version "begins with the letter v"). The spec's
+// version string does not: the reference build reports "Mackup 0.11.1". Both
+// sources go through here so a stamped "v1.2.3" cannot reintroduce the prefix
+// through the other door.
+func normalize(v string) string {
+	return strings.TrimPrefix(v, "v")
 }
 
 // Banner returns the exact line --version prints: "Mackup <version>".

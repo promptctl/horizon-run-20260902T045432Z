@@ -43,8 +43,7 @@ func Main(argv []string, streams *ui.IO) int {
 	}
 
 	// Still step 1: --help and --version short-circuit to stdout with exit 0,
-	// before any config read. They are the only paths that both succeed and
-	// skip the universal config-load gate.
+	// before any config read.
 	switch {
 	case inv.Opts.Help:
 		streams.Outln(cli.Usage)

@@ -112,6 +112,12 @@ var shortOpts = map[byte]string{
 // Parse turns argv (without the program name) into an Invocation. It reports a
 // *UsageError for argv matching no usage line; every other outcome is a
 // well-formed invocation, including the bare CmdNone one.
+//
+// --help and --version stop the scan where they are found, so nothing after
+// them is examined: appspec/02-invocation.md gives each its own usage line and
+// says it takes no other action. Stopping mid-scan rather than pre-scanning
+// argv keeps "mackup -c --help list" reading --help as the config-file
+// argument it is written as.
 func Parse(argv []string) (Invocation, error) {
 	var inv Invocation
 	var positional []string
@@ -143,6 +149,9 @@ func Parse(argv []string) (Invocation, error) {
 			if err := inv.Opts.set(name, value); err != nil {
 				return inv, err
 			}
+			if inv.Opts.Help || inv.Opts.Version {
+				return inv, nil
+			}
 		default:
 			// A short-option cluster: every letter is a flag except a final
 			// letter that takes an argument, which consumes the rest of the
@@ -156,6 +165,9 @@ func Parse(argv []string) (Invocation, error) {
 				if !longOpts[name] {
 					if err := inv.Opts.set(name, ""); err != nil {
 						return inv, err
+					}
+					if inv.Opts.Help || inv.Opts.Version {
+						return inv, nil
 					}
 					continue
 				}
@@ -173,11 +185,6 @@ func Parse(argv []string) (Invocation, error) {
 				j = len(cluster)
 			}
 		}
-	}
-
-	// --help and --version match their own usage lines and ignore positionals.
-	if inv.Opts.Help || inv.Opts.Version {
-		return inv, nil
 	}
 
 	cmd, app, err := matchCommand(positional)
