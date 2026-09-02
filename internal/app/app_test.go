@@ -4,12 +4,50 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/promptctl/macklebox/internal/ui"
 )
+
+// TestMain gives the whole package one throwaway home directory to run in.
+//
+// Main resolves the config and the storage root from the REAL environment --
+// that is what EnvironmentFromOS is -- so before this existed, every case that
+// got past appspec/02's config gate was reading the developer's machine. A
+// developer with a ~/.mackup.cfg naming a folder that exists saw dispatch; CI,
+// which has neither that file nor a Dropbox install, saw the provider failure
+// and reported a defect that was only ever in the test. The environment a case
+// is about is not the one it inherits.
+//
+// The config written here is the least a case needs to get PAST the gate: an
+// engine whose resolution cannot fail for an absent provider. Cases that are
+// about config failures belong in internal/config, which states its
+// environment per case, and at the boundary in test/conformance.
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "macklebox-app-home-")
+	if err != nil {
+		panic(err)
+	}
+	config := "[storage]\nengine = file_system\npath = storage\n"
+	if err := os.WriteFile(filepath.Join(home, ".mackup.cfg"), []byte(config), 0o600); err != nil {
+		panic(err)
+	}
+	// Both of the other two discovery candidates are cleared, not just HOME:
+	// a developer with MACKUP_CONFIG exported would otherwise reach a config
+	// outside this directory and the isolation would be partial, which is the
+	// same defect in a rarer environment.
+	os.Setenv("HOME", home)
+	os.Unsetenv("MACKUP_CONFIG")
+	os.Unsetenv("XDG_CONFIG_HOME")
+
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
+}
 
 type result struct {
 	code int
@@ -37,6 +75,21 @@ func run(argv ...string) result {
 	var out, errb bytes.Buffer
 	code := Main(argv, &ui.IO{In: strings.NewReader(""), Out: &out, Err: &errb})
 	return result{code: code, stdout: out.String(), stderr: errb.String()}
+}
+
+func TestTheseCasesRunAgainstAThrowawayHomeNotTheDevelopers(t *testing.T) {
+	// The assertion that keeps TestMain above from being deleted as ceremony.
+	// Without it, removing the isolation passes on any machine that happens to
+	// have a working ~/.mackup.cfg -- which is exactly how the dependence
+	// reached CI in the first place, green on the author's machine and red on
+	// a runner with no config and no Dropbox.
+	home := os.Getenv("HOME")
+	if _, err := os.Stat(filepath.Join(home, ".mackup.cfg")); err != nil {
+		t.Fatalf("HOME is %q, which holds no .mackup.cfg: these cases are reading a real machine", home)
+	}
+	if os.Getenv("MACKUP_CONFIG") != "" || os.Getenv("XDG_CONFIG_HOME") != "" {
+		t.Error("a discovery variable is set, so the config read is not this package's")
+	}
 }
 
 func TestHelpGoesToStdoutAndExitsZero(t *testing.T) {
