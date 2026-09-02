@@ -62,14 +62,26 @@ arbitrary path, so the Mackup folder need not live under `HOME`. A case that
 can only be checked by calling an internal function belongs in that package's
 own tests instead.
 
-The suite is behind the **`conformance` build tag** and always runs with
-**`-count=1`**. The package imports nothing from `cmd/` or `internal/` — it
-shells out to `go build` — so Go's test cache cannot see the implementation,
-and a cached `ok` will happily outlive a program that has since been broken.
-`-count=1` defeats that in the Makefile; the tag is what defeats it everywhere
-else, by keeping the package out of the default build so that a plain
-`go test ./...` — an IDE, `gopls`, another CI job — cannot report a stale pass
-for it either. Do not remove either one.
+The package imports nothing from `cmd/` or `internal/` — it shells out to
+`go build` — so nothing about the implementation reaches Go's test cache key on
+its own, and a cached `ok` will happily outlive a program that has since been
+broken. Three separate mechanisms close that, because no one of them closes all
+of it, and **all three must stay**:
+
+- The suite **reads every implementation source file** while a case is running,
+  which is what puts the program into the cache key. cmd/go records the files a
+  test binary opens; a changed implementation then invalidates the cached
+  result on its own, under any invocation that runs a case.
+- The **`conformance` build tag** keeps the package out of untagged builds, so
+  a plain `go test ./...` — an IDE, `gopls`, another CI job — reports nothing
+  for it rather than something stale. The tag does *not* make tagged runs
+  honest: `go test -tags conformance ./...` caches like any other package, and
+  that is the invocation `gopls` and GoLand use.
+- **`-count=1`**, which `make conformance` passes, needs neither of the above
+  to be right — but only covers what goes through the Makefile.
+
+The header of `test/conformance/harness_test.go` carries the same division next
+to the code that implements it.
 
 Every case must be able to fail for the reason it claims. Two rules follow:
 assert what the program *did*, never merely that it did not print a usage

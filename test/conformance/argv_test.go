@@ -1,12 +1,11 @@
 //go:build conformance
 
-// The conformance suite is behind a build tag so that `go test ./...` -- what
-// an IDE, gopls, or a second CI job runs by default -- cannot report a cached
-// "ok" for it. This package imports nothing from cmd/ or internal/; it shells
-// out to `go build`, so the test cache key does not change when the program
-// does, and a stale pass outlives a program that has since been broken. A
-// Makefile cannot prevent that: only the tag can, by keeping the package out
-// of the default build entirely. Run it with `make conformance` (or
+// The conformance suite is behind a build tag, one of three separate guards
+// against a cached "ok" outliving the program it was a result about. The tag
+// alone does not close it -- `go test -tags conformance ./...` is the hole it
+// leaves, and that is the invocation gopls and GoLand use -- so see the
+// header of harness_test.go for which guard covers what before removing any
+// of them. Run it with `make conformance` (or
 // `go test -count=1 -tags conformance ./test/conformance/`).
 
 package conformance

@@ -9,7 +9,8 @@
 //   - readImplementationSources, below, makes the cache honest: cmd/go records
 //     the files a test binary opens and folds them into the cache key, so
 //     changing the program invalidates the cached result. This is the part
-//     that works no matter how the suite is invoked.
+//     that holds under any invocation that runs a case -- any tags, any tool,
+//     no flags of ours required.
 //   - The `conformance` build tag keeps the package out of untagged builds, so
 //     a plain `go test ./...` does not report on it at all rather than
 //     reporting something stale.
@@ -33,6 +34,7 @@ package conformance
 import (
 	"bytes"
 	"errors"
+	"flag"
 	"fmt"
 	"io/fs"
 	"os"
@@ -40,6 +42,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -111,10 +114,6 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	// Before anything else, so that it happens on every run of this binary
-	// however few cases are selected.
-	readImplementationSources()
-
 	mackupBin = filepath.Join(dir, "mackup")
 	mackupStampedBin = filepath.Join(dir, "mackup-stamped")
 	if err := buildWithMake(mackupBin, ""); err != nil {
@@ -157,17 +156,39 @@ func TestMain(m *testing.M) {
 // readImplementationSources reads every Go source file of the program under
 // test, for its side effect on the Go test cache.
 //
-// cmd/go records the files a test binary opens and makes them part of the
-// cache key, so reading the implementation here is what ties a cached result
-// to the code it was a result about. Without it `go test -tags conformance
-// ./test/conformance/` reports "ok (cached)" over a program broken since --
-// verified by changing the not-implemented message in internal/app/dispatch.go
-// and watching the suite stay green.
+// cmd/go records the files a test binary opens and folds them into the cache
+// key, so reading the implementation here is what ties a cached result to the
+// code it was a result about. Without it `go test -tags conformance
+// ./test/conformance/` reports "ok (cached)" over a program broken since.
+//
+// It must run while a case is running. The testing package opens the log
+// cmd/go reads inside m.Run(), so anything TestMain does before that call --
+// and every package-level initializer, which runs earlier still -- is not
+// recorded at all. Calling this from TestMain, the obvious place, produced a
+// suite that read all of cmd/ and internal/ on every run and still served a
+// cached pass over a mutated program: the reads happened, and nothing was
+// listening. Hence sync.Once from NewWorld, which every case goes through.
+//
+// The residual gap is a -run filter that selects no case, since then nothing
+// reads anything; such a run also asserts nothing, so there is no pass to be
+// stale. Moving this call back out of a case is the failure that matters, and
+// the flag.Parsed check below is a tripwire for exactly that: flags are still
+// unparsed before m.Run, so a caller that runs too early to be recorded
+// panics instead of quietly buying back the stale pass.
 //
 // Errors are ignored: this is a cache-key contribution, not a check. A source
 // file that cannot be read will fail the build a moment later and say so
 // properly.
+var readSourcesOnce sync.Once
+
 func readImplementationSources() {
+	// flag.Parse runs at the top of m.Run and the testlog opens just after, so
+	// unparsed flags mean this is running somewhere its reads go nowhere.
+	// Panicking is the point: this defect is invisible -- the suite passes,
+	// stale -- and it has already been shipped twice.
+	if !flag.Parsed() {
+		panic("conformance: readImplementationSources ran before m.Run, where cmd/go does not record its reads; call it from a case (see NewWorld), not from TestMain")
+	}
 	root, err := moduleRoot()
 	if err != nil {
 		return
@@ -339,6 +360,9 @@ type World struct {
 // scratch directory is removed when the test finishes.
 func NewWorld(t *testing.T) *World {
 	t.Helper()
+	// Here rather than in TestMain: see readImplementationSources for why the
+	// cache key is only honest when this runs inside a case.
+	readSourcesOnce.Do(readImplementationSources)
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
 	if err := os.MkdirAll(home, 0o700); err != nil {

@@ -35,16 +35,15 @@ test:
 # throwaway home directory. `make test` runs it too, as its own step.
 #
 # -count=1 is load-bearing, not a habit. This package imports nothing from
-# cmd/ or internal/ -- it shells out to `go build` -- so the test cache key
-# does not change when the implementation changes, and a cached PASS survives
-# a broken program. Verified: replacing "Usage:" in internal/cli/usage.go left
-# `go test ./test/conformance/` reporting "ok (cached)" while -count=1 gave 10
-# failures.
+# cmd/ or internal/ -- it shells out to `go build` -- so nothing about the
+# implementation reaches the test cache key on its own, and a cached PASS
+# survives a broken program. Verified: replacing "Usage:" in
+# internal/cli/usage.go left `go test ./test/conformance/` reporting
+# "ok (cached)" while -count=1 gave 10 failures.
 #
-# The `conformance` build tag is what enforces that, since a Makefile cannot:
-# it keeps the package out of the default build, so a plain `go test ./...`
-# -- an IDE, gopls, another CI job -- cannot report a cached pass for it
-# either. Never drop either the flag or the tag.
+# This flag only covers what runs through this recipe. Two other mechanisms
+# cover what does not, and the header of test/conformance/harness_test.go says
+# which is which. Never drop any of the three.
 conformance:
 	go test -count=1 -tags conformance ./test/conformance/
 
