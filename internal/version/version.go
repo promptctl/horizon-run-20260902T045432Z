@@ -41,11 +41,21 @@ func String() string {
 //
 // A build made from a working tree is an uninstalled tree whatever it calls
 // itself, and since Go 1.24 such a build is no longer labelled "(devel)": the
-// toolchain derives a pseudo-version from the checkout's own commit, so a
-// developer build reports something like
-// "0.0.0-20260902061304-da54d01d3c9b+dirty". That is a build identity, not a
-// package version -- precisely the case appspec/00-overview.md says must
-// report the literal token "unknown".
+// toolchain derives a version from the checkout itself. That is a build
+// identity, not a package version -- precisely the case
+// appspec/00-overview.md says must report the literal token "unknown", since
+// the metadata it names is "installed package metadata" and there is none.
+//
+// It takes two shapes, and discarding BOTH is deliberate. The obvious one is
+// the pseudo-version of an untagged commit,
+// "0.0.0-20260902061304-da54d01d3c9b+dirty". The one that reads like a bug is
+// a clean checkout sitting on a release tag, which stamps the tag itself:
+// `go build` at v0.11.1 yields Main.Version "v0.11.1" alongside vcs.revision,
+// observed on go1.25.7. Reporting 0.11.1 there would still be wrong -- the
+// tree is uninstalled, and the number would come from whatever tag the
+// checkout happens to sit on rather than from a package. A release build gets
+// its version the way the Makefile gives it one, through -X, which arrives as
+// the linker stamp above and never reaches here.
 //
 // The two are told apart by provenance rather than by the shape of the string:
 // a build from a checkout carries vcs.* build settings, and one installed from

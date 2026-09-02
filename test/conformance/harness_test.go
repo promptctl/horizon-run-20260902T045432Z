@@ -153,8 +153,12 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// readImplementationSources reads every Go source file of the program under
-// test, for its side effect on the Go test cache.
+// readSourcesOnce guards readImplementationSources, which every case calls and
+// only the first needs to do.
+var readSourcesOnce sync.Once
+
+// readImplementationSources reads every file the build could read, for its
+// side effect on the Go test cache.
 //
 // cmd/go records the files a test binary opens and folds them into the cache
 // key, so reading the implementation here is what ties a cached result to the
@@ -176,11 +180,19 @@ func TestMain(m *testing.M) {
 // unparsed before m.Run, so a caller that runs too early to be recorded
 // panics instead of quietly buying back the stale pass.
 //
-// Errors are ignored: this is a cache-key contribution, not a check. A source
-// file that cannot be read will fail the build a moment later and say so
-// properly.
-var readSourcesOnce sync.Once
-
+// It reads the whole tree rather than a list of source directories. Reading
+// too much only costs a cache miss on an unrelated edit; reading too little
+// costs a stale pass, so the walk errs deliberately in the cheap direction.
+// The earlier version read *.go under a hardcoded cmd/ and internal/, which
+// misses whatever the next tickets add -- appspec/05's application database is
+// a set of .cfg files, not Go source -- and would have gone on reading nothing
+// at all if either directory were renamed.
+//
+// Errors on an individual file are ignored: this is a cache-key contribution,
+// not a check, and a source file that cannot be read will fail the build a
+// moment later and say so properly. Reading *nothing* is different, and
+// panics: that is the silent-degradation shape this mechanism keeps failing
+// in, and it looks exactly like success.
 func readImplementationSources() {
 	// flag.Parse runs at the top of m.Run and the testlog opens just after, so
 	// unparsed flags mean this is running somewhere its reads go nowhere.
@@ -191,20 +203,63 @@ func readImplementationSources() {
 	}
 	root, err := moduleRoot()
 	if err != nil {
-		return
+		panic("conformance: " + err.Error() + "; with no module root nothing is read and the cache stops tracking the program")
 	}
-	for _, dir := range []string{"cmd", "internal"} {
-		filepath.WalkDir(filepath.Join(root, dir), func(path string, entry fs.DirEntry, err error) error {
-			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") {
-				return nil
-			}
-			os.ReadFile(path)
+	read := map[string]bool{}
+	filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
 			return nil
-		})
+		}
+		if entry.IsDir() {
+			if path != root && sourceWalkSkips[entry.Name()] {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		// Never opened, for the same reason Snapshot does not open them: a
+		// FIFO with no writer blocks until the run is killed. Nothing here is
+		// worth hanging the suite over.
+		if info, err := entry.Info(); err != nil || !info.Mode().IsRegular() {
+			return nil
+		}
+		if _, err := os.ReadFile(path); err != nil {
+			return nil
+		}
+		if relative, err := filepath.Rel(root, path); err == nil {
+			read[relative] = true
+		}
+		return nil
+	})
+
+	// Anchors rather than a file count, so a failure says what is missing
+	// rather than that a number came out low.
+	missing := []string{}
+	for _, anchor := range []string{"go.mod", "Makefile"} {
+		if !read[anchor] {
+			missing = append(missing, anchor)
+		}
 	}
-	// The build is stamped through the Makefile, so it counts as an input too.
-	os.ReadFile(filepath.Join(root, "Makefile"))
+	sawGo := false
+	for relative := range read {
+		if strings.HasSuffix(relative, ".go") {
+			sawGo = true
+			break
+		}
+	}
+	if !sawGo {
+		missing = append(missing, "any .go file")
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		panic(fmt.Sprintf("conformance: the walk of %s read %d files but not %s, so the cache key does not track the program and a cached pass would outlive a broken one", root, len(read), strings.Join(missing, " or ")))
+	}
 }
+
+// sourceWalkSkips are the directories readImplementationSources does not
+// descend into. Both hold things the build does not read: .git is history, and
+// bin is the Makefile's own output, which would otherwise put a rebuilt binary
+// into the cache key of the suite that builds it.
+var sourceWalkSkips = map[string]bool{".git": true, "bin": true}
 
 // buildDirPrefix names this suite's build directories, so that a later run can
 // recognize one an earlier run abandoned.

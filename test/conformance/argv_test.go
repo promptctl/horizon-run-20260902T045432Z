@@ -347,12 +347,32 @@ func TestTheSnapshotSeesAFileRewrittenWithTheBytesItAlreadyHeld(t *testing.T) {
 	// full second on ext3 and HFS+ -- so the rewrite is repeated until the
 	// stamp actually moves rather than after a fixed sleep chosen to be "long
 	// enough", which on a one-second filesystem it would not be.
+	// The filesystem is asked directly what it did, so that the two reasons
+	// this case might not see a change stay apart. Skipping on "the snapshot
+	// did not change" alone would fold them together, and the case could then
+	// only pass or skip: dropping the stamp from Snapshot entirely made this
+	// skip after 3s and the whole suite report "ok", with every
+	// ExpectUnchanged silently blind to the copy it exists to catch.
+	original, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("reading the modification time of %s: %v", path, err)
+	}
+
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			t.Fatalf("rewriting %s: %v", path, err)
 		}
-		if world.Snapshot()[key] != before[key] {
+		rewritten, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("reading the modification time of %s: %v", path, err)
+		}
+		if !rewritten.ModTime().Equal(original.ModTime()) {
+			// The OS moved the stamp, so the snapshot has no excuse.
+			if got := world.Snapshot()[key]; got == before[key] {
+				t.Errorf("the filesystem moved %s's modification time from %s to %s, but its snapshot entry is unchanged at %q; Snapshot no longer records the stamp, so ExpectUnchanged cannot see a rewrite that preserves the bytes",
+					key, original.ModTime(), rewritten.ModTime(), got)
+			}
 			return
 		}
 		if time.Now().After(deadline) {
@@ -364,6 +384,7 @@ func TestTheSnapshotSeesAFileRewrittenWithTheBytesItAlreadyHeld(t *testing.T) {
 	// Said out loud rather than asserted away: where the stamp will not move
 	// within the deadline, ExpectUnchanged genuinely cannot see a rewrite that
 	// preserves the bytes, and any case relying on that -- appspec/01 section
-	// 3's dry-run contract above all -- is weaker on this filesystem.
+	// 3's dry-run contract above all -- is weaker on this filesystem. This is
+	// now reached only when the OS itself held the stamp still.
 	t.Skipf("this filesystem's modification-time resolution is too coarse to register a rewrite of %s within %s, so a same-bytes rewrite is invisible to ExpectUnchanged here", key, 3*time.Second)
 }
