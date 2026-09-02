@@ -21,11 +21,17 @@ func loadConfig(cli.Invocation) error { return nil }
 // TODO(macklebox-resolvers-5iw.3): implement.
 func assembleApplicationDatabase(cli.Invocation) error { return nil }
 
-// environmentGate runs the three-level lattice of appspec/01 section 4: the
-// root guard and storage-root existence for every command, plus the
-// per-command Mackup-folder gate.
+// environmentGate runs level 1 of the lattice in appspec/01 section 4 -- the
+// root guard and storage-root existence -- which every command passes
+// identically.
 //
-// TODO(macklebox-resolvers-5iw.4): implement the usable-environment level --
-// the root guard and storage-root existence. The per-command Mackup-folder
-// gate arrives with the commands that need it.
+// Levels 2 and 3, the per-command Mackup-folder gate, deliberately do NOT
+// belong here: appspec/02 requires a named <application> to be validated
+// before the environment check for its command, "so that an unknown
+// application fails cleanly before any folder is created or any prompt is
+// shown". Creating the folder from this seam would make `backup frobnicate`
+// prompt and create before rejecting the key.
+//
+// TODO(macklebox-resolvers-5iw.4): implement the root guard and storage-root
+// existence check.
 func environmentGate(cli.Invocation) error { return nil }

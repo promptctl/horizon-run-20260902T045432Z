@@ -198,3 +198,38 @@ func TestParseRejectsTheUndocumentedDoubleDash(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRejectsABareDash(t *testing.T) {
+	// The reasoning that removed "--" applies here too: no application key in
+	// appspec/appendix-application-names.md begins with a dash, so "-" is an
+	// unmatched argument rather than a key. Rejecting it at the parser gives
+	// the usage block instead of a database miss much later.
+	var usageErr *UsageError
+	for _, argv := range [][]string{{"-"}, {"show", "-"}, {"backup", "-"}} {
+		if _, err := Parse(argv); !errors.As(err, &usageErr) {
+			t.Errorf("Parse(%q) = %v, want a *UsageError", argv, err)
+		}
+	}
+}
+
+func TestParseNamesTheCharacterTheUserTyped(t *testing.T) {
+	// Options are keyed by byte, so a naive diagnostic reports the first byte
+	// of a multi-byte rune -- naming a character the user never typed.
+	var usageErr *UsageError
+	if _, err := Parse([]string{"-é", "list"}); !errors.As(err, &usageErr) {
+		t.Fatalf("Parse(-é list) = %v, want a *UsageError", err)
+	}
+	if !strings.Contains(usageErr.Warning, "-é") {
+		t.Errorf("warning = %q, want it to name -é", usageErr.Warning)
+	}
+}
+
+func TestCommandStringIsAlwaysSelfDescribing(t *testing.T) {
+	// The value feeds user-facing diagnostics, so no Command may render as an
+	// empty string -- including one added later without updating String().
+	for _, cmd := range []Command{CmdNone, CmdList, CmdShow, CmdBackup, CmdRestore, CmdLinkInstall, CmdLinkUninstall, CmdLink, Command(99)} {
+		if cmd.String() == "" {
+			t.Errorf("Command(%d).String() is empty", int(cmd))
+		}
+	}
+}

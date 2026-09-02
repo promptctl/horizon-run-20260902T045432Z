@@ -6,6 +6,7 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // Command identifies which usage line argv matched.
@@ -42,7 +43,7 @@ func (c Command) String() string {
 	case CmdLink:
 		return "link"
 	default:
-		return ""
+		return fmt.Sprintf("Command(%d)", int(c))
 	}
 }
 
@@ -87,6 +88,15 @@ func usageErrf(format string, args ...any) error {
 	return &UsageError{Warning: fmt.Sprintf(format, args...)}
 }
 
+// shortName returns the first character of a short-option cluster for a
+// diagnostic. Options are keyed by byte because every valid one is ASCII, but
+// a message must name the character the user typed: reporting the first byte
+// of a multi-byte rune names one they did not.
+func shortName(cluster string) string {
+	r, _ := utf8.DecodeRuneInString(cluster)
+	return string(r)
+}
+
 // longOpts maps a long option name to whether it takes an argument.
 var longOpts = map[string]bool{
 	"help":        false,
@@ -125,10 +135,13 @@ func Parse(argv []string) (Invocation, error) {
 	for i := 0; i < len(argv); i++ {
 		arg := argv[i]
 		switch {
-		case arg == "-" || !strings.HasPrefix(arg, "-"):
+		case !strings.HasPrefix(arg, "-"):
 			positional = append(positional, arg)
 		case strings.HasPrefix(arg, "--"):
 			name, value, hasValue := strings.Cut(arg[2:], "=")
+			if name == "" {
+				return inv, usageErrf("unrecognized argument: %s", arg)
+			}
 			takesArg, known := longOpts[name]
 			if !known {
 				return inv, usageErrf("unrecognized option: --%s", name)
@@ -154,10 +167,13 @@ func Parse(argv []string) (Invocation, error) {
 			// letter that takes an argument, which consumes the rest of the
 			// cluster or the next argv element.
 			cluster := arg[1:]
+			if cluster == "" {
+				return inv, usageErrf("unrecognized argument: %s", arg)
+			}
 			for j := 0; j < len(cluster); j++ {
 				name, known := shortOpts[cluster[j]]
 				if !known {
-					return inv, usageErrf("unrecognized option: -%c", cluster[j])
+					return inv, usageErrf("unrecognized option: -%s", shortName(cluster[j:]))
 				}
 				if !longOpts[name] {
 					if err := inv.Opts.set(name, ""); err != nil {
@@ -172,7 +188,7 @@ func Parse(argv []string) (Invocation, error) {
 				if cluster[j+1:] == "" {
 					i++
 					if i >= len(argv) {
-						return inv, usageErrf("option -%c requires an argument", cluster[j])
+						return inv, usageErrf("option -%s requires an argument", shortName(cluster[j:]))
 					}
 					value = argv[i]
 				}
