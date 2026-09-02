@@ -25,9 +25,17 @@ every subcommand except `--help` and `--version` now reads your real
 `~/.mackup.cfg`, resolves your real storage location, and assembles the
 database from `~/.mackup/`, `$XDG_CONFIG_HOME/mackup/applications/` and the
 built-in set before it does anything else, and aborts there if any of the
-three is wrong. The environment gate and the sync operations themselves are
-not yet, and nothing prints the database: a subcommand that gets past
-assembly still reports itself as unimplemented.
+three is wrong. Behind that, level 1 of `appspec/01` §4's environment gate now
+runs for every command alike: the superuser guard, and the storage-root
+directory check that `appspec/04` deliberately defers to it.
+
+`list` and `show` therefore work end to end. `mackup list` prints all 614
+application keys and the supported-count trailer, `mackup show vim` prints a
+display name and a sorted, home-relative file set, and both fail exactly as
+`backup` does when the config is broken or the storage folder is not there —
+which is the point of putting them behind the same gates. The sync operations
+are not written yet: the five commands that copy or link files still report
+themselves as unimplemented.
 
 ## Implementation
 
@@ -132,9 +140,21 @@ written out in `internal/fault/fault.go`; argue with it there.
 `internal/appdb/` is the third stage: `appspec/05`'s map from application key
 to display name and home-relative file set. It is assembled before dispatch,
 so a single bad definition aborts `list` and `show` exactly as it aborts a
-sync command. Nothing prints it yet — `dispatch` receives it, and the three
-enumeration lookups `appspec/05` names (all keys, display name, file set) wait
-on `list`.
+sync command. `list` and `show` are its first readers:
+`internal/app/enumerate.go` prints it through the three enumeration lookups
+`appspec/05` names — all keys, display name, file set — and through nothing
+else. No key is re-derived from a filename there and no path from a
+definition, so the output formats `appspec/05` writes out literally are the
+only thing that file decides.
+
+`list` prints **every** key, and the config's application lists do not narrow
+it. That is contract rather than an omission: `appspec/03` says of
+`[applications_to_sync]` that "this section does not affect `list` output", and
+`appspec/05` defines what `list` prints as "the set of all keys assembled by
+the discovery rules". It is also what makes `list` an audit surface — a user
+narrowing their sync scope still needs to see the catalog the narrowing is
+drawn from. `Config.Scope` selects what a *sync* command acts on, and has no
+caller until the sync engine lands.
 
 Precedence is decided **by filename, before any file is read**. The three
 directories — `~/.mackup/`, `$XDG_CONFIG_HOME/mackup/applications/`, and the
@@ -226,8 +246,10 @@ block any case matches on. `ExpectNotImplemented` matches the dispatch stub's
 `Error: <cmd> is not implemented yet.`, so that "argv accepts this form" can be
 asserted positively rather than as the absence of a usage error; each use is
 replaced by an assertion on the command's real behavior as that command's
-ticket lands. Reword either and the suite fails — which is the point, but know
-where to look.
+ticket lands. That replacement has now happened for `list` and `show`, whose
+cases assert the `appspec/05` output formats instead, and the remaining uses
+are the five sync verbs. Reword either token and the suite fails — which is
+the point, but know where to look.
 
 `--version` reports the package's own version when one was stamped in, and the
 fallback token `unknown` otherwise, per the spec's provenance rule.
