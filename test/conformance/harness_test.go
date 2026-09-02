@@ -7,10 +7,12 @@
 // of it:
 //
 //   - readImplementationSources, below, makes the cache honest: cmd/go records
-//     the files a test binary opens and folds them into the cache key, so
-//     changing the program invalidates the cached result. This is the part
+//     the files a test binary opens and folds them into the cache key, so an
+//     edit to the program invalidates the cached result. This is the part
 //     that holds under any invocation that runs a case -- any tags, any tool,
-//     no flags of ours required.
+//     no flags of ours required. It is stat-based, not content-based, and
+//     the limit that follows from that is spelled out on
+//     readImplementationSources.
 //   - The `conformance` build tag keeps the package out of untagged builds, so
 //     a plain `go test ./...` does not report on it at all rather than
 //     reporting something stale.
@@ -33,6 +35,7 @@ package conformance
 
 import (
 	"bytes"
+	"debug/buildinfo"
 	"errors"
 	"flag"
 	"fmt"
@@ -132,10 +135,12 @@ func TestMain(m *testing.M) {
 	// unstamped while CI, whose checkout was stamped, failed on exactly that
 	// assertion. Forcing the stamp gives the hard half a binary of its own.
 	//
-	// Where the toolchain cannot stamp at all -- a source tarball with no
-	// repository, where -buildvcs=true is a hard error -- this build is simply
-	// unavailable. The suite does not silently fall back to an unstamped
-	// binary, which would restore the vacuous pass under a different name:
+	// Where the toolchain will not stamp -- a source tarball with no
+	// repository, where -buildvcs=true builds clean and stamps nothing rather
+	// than failing -- this build is simply unavailable, because
+	// buildForcingVCSStamp checks the artifact instead of trusting the exit
+	// status. The suite does not silently fall back to an unstamped binary,
+	// which would restore the vacuous pass under a different name:
 	// requireVCSStampedBuild reports the degradation, skipping locally and
 	// failing under CI.
 	vcsBin := filepath.Join(dir, "mackup-vcs")
@@ -182,15 +187,22 @@ var readSourcesOnce sync.Once
 // unparsed before m.Run, so a caller that runs too early to be recorded
 // panics instead of quietly buying back the stale pass.
 //
+// What cmd/go folds in is the stat, not the bytes: hashOpen hashes size, mode
+// and modification time and says so in its own comment, "do not attempt to
+// hash the entirety of their content". So the guarantee is an edit that moves
+// a file's size or mtime, which every editor, compiler and checkout does, and
+// not literally any edit -- rewriting a file in place with the same length and
+// then restoring its mtime does serve a cached pass over a changed program.
+// Verified, by doing exactly that. -count=1 is what covers it completely, and
+// is why `make conformance` passes it rather than relying on this.
+//
 // It reads the whole tree rather than a list of source directories. Reading
 // too little costs a stale pass; reading too much costs time and a cache miss
 // on an unrelated edit, so the walk errs deliberately in the cheaper
-// direction. "Cheaper" is not "free", and it scales with the working tree: a
-// large artifact left in the checkout is read on every run, and cmd/go then
-// hashes it in full whatever we read of it, so capping the read would not cap
-// the cost. If this tree ever grows a vendored or generated directory, skip
-// that directory rather than the files -- but never narrow the walk back to a
-// guess at where the program lives.
+// direction. "Cheaper" is not "free": it scales with the working tree, since
+// every file read is a file opened and stat-hashed. If this tree ever grows a
+// vendored or generated directory, skip that directory -- but never narrow
+// the walk back to a guess at where the program lives.
 // The earlier version read *.go under a hardcoded cmd/ and internal/, which
 // misses whatever the next tickets add -- appspec/05's application database is
 // a set of .cfg files, not Go source -- and would have gone on reading nothing
@@ -406,8 +418,24 @@ func environWithoutMakeflags() []string {
 	return kept
 }
 
-// buildForcingVCSStamp builds with -buildvcs=true, which is an error rather
-// than a silent decline when the repository cannot be read.
+// buildForcingVCSStamp builds with -buildvcs=true and returns an error unless
+// the artifact actually came out stamped.
+//
+// The check is the point. -buildvcs=true reads like a demand and is not one:
+// cmd/go treats "no repository here" as nothing to do rather than as a
+// failure -- in load.setBuildInfo the error from vcs.FromDir is ignored when
+// it wraps fs.ErrNotExist -- so a tree with no .git builds clean, exits 0, and
+// carries no vcs.* settings at all. It errors only when a repository IS found
+// and the VCS command then fails: git missing, git refusing a dubiously-owned
+// repository, a repository that does not contain the module.
+//
+// Inferring "stamped" from the exit status therefore hands the version case a
+// binary reporting "(devel)", which reports the fallback token for the
+// trivial reason -- the vacuous pass this whole build exists to prevent,
+// restored in exactly the environment the caller's comment claimed was
+// covered: a source tarball, a vendored copy, a Docker build that COPYs
+// without .git. Verified by building this module from a copy of the tree with
+// .git removed: exit 0, "mod ... (devel)", no vcs settings.
 func buildForcingVCSStamp(out string) error {
 	root, err := moduleRoot()
 	if err != nil {
@@ -420,7 +448,17 @@ func buildForcingVCSStamp(out string) error {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("building %s with VCS stamping forced on: %v\n%s", out, err, output)
 	}
-	return nil
+
+	info, err := buildinfo.ReadFile(out)
+	if err != nil {
+		return fmt.Errorf("reading the build info of %s: %v", out, err)
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "vcs.revision" {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s built with -buildvcs=true but carries no vcs.revision setting, so the toolchain stamped nothing and the build cannot exercise the provenance rule", out)
 }
 
 // moduleRoot is the directory holding go.mod, found by walking up from the
