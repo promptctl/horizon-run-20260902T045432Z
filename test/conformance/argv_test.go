@@ -509,6 +509,62 @@ func TestAVariableTheWorldSetsReachesTheProgram(t *testing.T) {
 	}
 }
 
+func TestTheSuiteRefreshesItsOwnBuildDirectory(t *testing.T) {
+	// The wiring, which neither of the other two cases covers.
+	// TestARefreshedBuildDirectoryOutlivesTheReaper calls touchBuildDir
+	// itself, and the case below drives refreshBuildDir itself; the line in
+	// TestMain that points the refresher at the real build directory was
+	// covered by neither, and replacing it with `_ = keepBuildDirFresh` left
+	// the whole gate green.
+	//
+	// Without it the reaper deletes this run's binaries out from under it once
+	// the suite has been going for an hour -- a slow machine, -race, a
+	// debugger -- and the failure surfaces as an exec error in whichever case
+	// happened to be running when the next run started.
+	got, _ := refreshingBuildDir.Load().(string)
+	if want := filepath.Dir(mackupBin); got != want {
+		t.Errorf("the suite is refreshing %q, want the directory holding its binaries, %q; nothing is keeping this run's build directory from being reaped mid-suite", got, want)
+	}
+}
+
+func TestTheBuildDirectoryRefresherKeepsTouching(t *testing.T) {
+	// That it touches REPEATEDLY, which is what separates a refresher from the
+	// single Chtimes the build already does. The suite's own interval is five
+	// minutes and cannot be waited on, so the loop takes its interval as an
+	// argument and this drives it at a millisecond.
+	//
+	// Two advances, not one: a "refresher" that touched once and returned
+	// would satisfy a single-advance assertion and still leave the directory
+	// to go stale for the rest of the run.
+	dir := t.TempDir()
+	stale := time.Now().Add(-2 * buildDirAbandonedAfter)
+	if err := os.Chtimes(dir, stale, stale); err != nil {
+		t.Fatalf("ageing %s: %v", dir, err)
+	}
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go refreshBuildDir(dir, time.Millisecond, stop)
+
+	seen := []time.Time{}
+	last := stale
+	deadline := time.Now().Add(10 * time.Second)
+	for len(seen) < 2 && time.Now().Before(deadline) {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if got := info.ModTime(); got.After(last) {
+			seen = append(seen, got)
+			last = got
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if len(seen) < 2 {
+		t.Errorf("the refresher moved %s's modification time %d times in 10s at a 1ms interval, want at least 2; it is not looping, so the directory goes stale for the rest of the run", dir, len(seen))
+	}
+}
+
 func TestTheForcedStampGOFLAGSKeepsWhatGoEnvAlreadyCarries(t *testing.T) {
 	// The forced-stamp build overrides GOFLAGS, and the override has to keep
 	// what was already there or it breaks builds for a reason that has nothing

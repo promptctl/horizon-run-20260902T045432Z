@@ -203,10 +203,21 @@ MUTATIONS = [
    "\t// mackupVCSBuildErr says why mackupVCSBin is empty, when it is.\n\tinsertedUnderTheComment error\n\n\tmackupVCSBuildErr error")],
    'the doc comment on insertedUnderTheComment opens with "mackupVCSBuildErr"'),
 
+ # `ok && bi != nil`, and the nil check is the whole point of the entry rather
+ # than defensive noise. Without it this mutation dereferenced a nil
+ # *debug.BuildInfo in TestStringFallsBackWhenTheBuildCarriesNoBuildInfo --
+ # which feeds readBuildInfo exactly (nil, true) -- and PANICKED the
+ # internal/version test binary. A panic aborts the run, so
+ # TestAnExplicitStampSurvivesAWorkingTreeBuild, the case written for this
+ # regression and declared after it in the file, never executed. The entry
+ # reported "killed" on a crash in an unrelated case: gutting the case this is
+ # supposed to prove still left it green. That is rule 3 of the docstring
+ # above, broken by the entry meant to exercise it, which is why the expected
+ # diagnostic is no longer None.
  ("working-tree provenance outranks the linker stamp", [repl(V,
    "\tif value != \"\" {\n\t\treturn normalize(value)\n\t}\n",
-   "\tif bi, ok := readBuildInfo(); ok {\n\t\tfor _, setting := range bi.Settings {\n\t\t\tif setting.Key == \"vcs.revision\" {\n\t\t\t\treturn Fallback\n\t\t\t}\n\t\t}\n\t}\n\tif value != \"\" {\n\t\treturn normalize(value)\n\t}\n")],
-   None),
+   "\tif bi, ok := readBuildInfo(); ok && bi != nil {\n\t\tfor _, setting := range bi.Settings {\n\t\t\tif setting.Key == \"vcs.revision\" {\n\t\t\t\treturn Fallback\n\t\t\t}\n\t\t}\n\t}\n\tif value != \"\" {\n\t\treturn normalize(value)\n\t}\n")],
+   'want the stamped "0.11.1" even though the build came from a working tree'),
 
  ("Snapshot mode dropped", [repl(H,
    'snapshot[relative] = fmt.Sprintf("file %04o @%d %q", info.Mode().Perm(), stamp, content)',
@@ -290,6 +301,17 @@ MUTATIONS = [
    '\treturn strings.TrimSpace(strings.TrimSpace(string(reported)) + " -buildvcs=true"), nil',
    '\t_ = reported\n\treturn "-buildvcs=true", nil')],
    "dropped -mod=mod from `go env GOFLAGS`"),
+
+ # Two mechanisms, one contract, and until these existed only one of them was
+ # falsifiable: touchBuildDir had a case, the loop and the wiring had none.
+ ("the build directory refresher is never started", [repl(H,
+   "\tkeepBuildDirFresh(dir)\n", "\t_ = keepBuildDirFresh\n")],
+   "want the directory holding its binaries"),
+
+ ("the build directory refresher touches once and stops", [repl(H,
+   "\tfor {\n\t\tselect {\n\t\tcase <-stop:\n\t\t\treturn\n\t\tcase <-time.After(interval):\n\t\t\ttouchBuildDir(dir)\n\t\t}\n\t}\n",
+   "\tselect {\n\tcase <-stop:\n\tcase <-time.After(interval):\n\t\ttouchBuildDir(dir)\n\t}\n")],
+   "it is not looping"),
 
  ("the version banner gains a suffix", [repl(V,
    'return "Mackup " + String()', 'return "Mackup " + String() + "-extra"')],

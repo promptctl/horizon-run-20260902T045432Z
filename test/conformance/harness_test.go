@@ -47,6 +47,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -416,16 +417,54 @@ const buildDirAbandonedAfter = time.Hour
 // which is more machinery than a disk-reclaiming reaper has earned.
 const buildDirTouchInterval = 5 * time.Minute
 
-// keepBuildDirFresh refreshes dir's modification time until the process ends.
-// It is never stopped: the goroutine costs one timer, and the process it
-// belongs to is a test binary that exits from TestMain.
+// refreshingBuildDir holds the directory the running suite is refreshing, or
+// nothing if it never started one.
+//
+// It exists so a case can assert the wiring, which nothing did.
+// TestARefreshedBuildDirectoryOutlivesTheReaper pins touchBuildDir by calling
+// it, and refreshBuildDir is pinned by driving it -- but the call in TestMain
+// that connects the two to the real build directory was covered by neither:
+// replacing `keepBuildDirFresh(dir)` with `_ = keepBuildDirFresh` left the
+// whole gate green. Two mechanisms for one contract and only one of them
+// falsifiable is the shape this branch keeps finding.
+//
+// The directory and not a bool, so that starting the refresher on the wrong
+// directory fails too, which a bool would call success.
+var refreshingBuildDir atomic.Value
+
+// keepBuildDirFresh starts refreshing dir's modification time, and records dir
+// so a case can check that this ran at all.
+//
+// The refresher is never stopped: the goroutine costs one timer, and the
+// process it belongs to is a test binary that exits from TestMain.
 func keepBuildDirFresh(dir string) {
-	go func() {
-		for {
-			time.Sleep(buildDirTouchInterval)
+	refreshingBuildDir.Store(dir)
+	go refreshBuildDir(dir, buildDirTouchInterval, nil)
+}
+
+// refreshBuildDir touches dir every interval until stop is closed.
+//
+// Split out of keepBuildDirFresh, and taking its interval, for the reason
+// touchBuildDir was split out of this loop: a loop that sleeps for minutes
+// cannot be driven from a case, so the fact that it touches REPEATEDLY -- the
+// thing that separates a refresher from a single Chtimes at build time -- had
+// nothing pinning it. TestTheBuildDirectoryRefresherKeepsTouching drives it at
+// a millisecond and watches the modification time move twice.
+//
+// A nil stop channel never becomes ready, which is what the suite's own
+// refresher passes: a receive on a nil channel blocks forever, so the select
+// waits on the timer alone. A case passes a real channel and closes it, so the
+// goroutine does not outlive the case that started it and go on touching a
+// directory the testing package has already removed.
+func refreshBuildDir(dir string, interval time.Duration, stop <-chan struct{}) {
+	for {
+		select {
+		case <-stop:
+			return
+		case <-time.After(interval):
 			touchBuildDir(dir)
 		}
-	}()
+	}
 }
 
 // touchBuildDir marks dir as still in use by moving its modification time to

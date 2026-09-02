@@ -139,10 +139,19 @@ vet:
 	go vet -tags conformance ./...
 	GOOS=windows go vet -tags conformance ./test/conformance/
 
-# Same file list as the check target's gofmt step, and for the same reason --
-# see the comment there. It is spelled out twice rather than shared through a
-# variable so that each target keeps its own guard on find's exit status; the
-# thing to avoid is one of them drifting, so change both.
+# The same GO_SOURCES as the check target's gofmt step -- one definition, not
+# two copies -- for the reason given where it is defined. This comment used to
+# say the list was "spelled out twice ... so change both", which was true until
+# the definition was shared and then described code that no longer existed and
+# sent the next editor after a second copy there isn't one of.
+#
+# The other half of that sentence was wrong too, and worth being exact about
+# since the difference is real: this target does NOT guard gofmt's exit status
+# the way check does. It relies on find being the recipe's last command, so a
+# failing gofmt fails the target through make's own exit-status handling. check
+# cannot do that -- it has to capture the output to test it for emptiness --
+# which is why the explicit `|| { echo "make: gofmt failed"; exit 1; }` is
+# there and not here.
 fmt:
 	@$(GO_SOURCES) -print | grep -q . || { echo "make: found no Go files to format" >&2; exit 1; }; \
 		$(GO_SOURCES) -exec gofmt -l -w {} +
