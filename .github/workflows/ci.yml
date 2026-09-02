@@ -38,14 +38,26 @@ jobs:
           # about dependencies and threw away the half that matters here.
           # setup-go caches `go env GOCACHE` as well as `go env GOMODCACHE`,
           # and for a module with no dependencies the build cache is the whole
-          # benefit: it is what carries compiled standard-library and package
-          # objects from one run to the next. (Once per run, not once per step
-          # -- GOCACHE is shared by vet, the tests and the build within a job,
-          # so the cost this saves is the cold first compile, not four of
-          # them.) A stale entry cannot corrupt a result --
-          # the build cache is content-addressed, and the one place a restored
-          # cache could serve a stale PASS, the conformance suite, is pinned by
-          # -count=1 in the Makefile for reasons recorded there.
+          # benefit.
+          #
+          # What it buys is the compiled standard library, and only that. The
+          # key is a hash of the file named here with no restore-keys, and the
+          # post-job step returns early -- "Cache hit occurred on the primary
+          # key, not saving cache" -- whenever the restore matched, so the
+          # cache is written once and then frozen until go.mod or the Go
+          # version changes. Stdlib objects stay valid across runs and are the
+          # bulk of a cold compile; this project's own package objects go
+          # stale after the first commit and are recompiled every run. Earning
+          # those back would mean a key with a varying suffix plus
+          # restore-keys, which setup-go does not expose -- it would take a
+          # separate actions/cache step, for a module whose own packages
+          # compile in about a second. Not worth it; the claim is narrowed
+          # instead.
+          #
+          # A stale entry cannot corrupt a result: the build cache is
+          # content-addressed, and the one place a restored cache could serve
+          # a stale PASS, the conformance suite, is pinned by -count=1 in the
+          # Makefile for reasons recorded there.
           cache-dependency-path: go.mod
 
       # vet, the unit tests, the black-box conformance suite, and the gofmt

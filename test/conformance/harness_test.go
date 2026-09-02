@@ -103,7 +103,7 @@ func TestMain(m *testing.M) {
 	// m.Run() at all, since the testing package re-panics on the test's own
 	// goroutine where nothing here can recover. Without a reaper each crash
 	// abandons several megabytes for good.
-	reapAbandonedBuildDirectories()
+	reapAbandonedBuildDirectories(os.TempDir())
 	dir, err := os.MkdirTemp("", buildDirPrefix)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "conformance: %v\n", err)
@@ -359,13 +359,26 @@ func keepBuildDirFresh(dir string) {
 // that crashed. Errors are ignored throughout: another user's directory is not
 // ours to remove, and failing to reclaim disk space is not a reason to fail a
 // test run.
-func reapAbandonedBuildDirectories() {
-	matches, err := filepath.Glob(filepath.Join(os.TempDir(), buildDirPrefix+"*"))
+// The directory to sweep is a parameter so a case can point it at a scratch
+// directory. Sweeping the real TMPDIR from a case would race every other
+// conformance run on the machine, including a concurrent one of this suite.
+func reapAbandonedBuildDirectories(within string) {
+	matches, err := filepath.Glob(filepath.Join(within, buildDirPrefix+"*"))
 	if err != nil {
 		return
 	}
 	for _, path := range matches {
-		info, err := os.Stat(path)
+		// Lstat, not Stat: the decision is about this entry, and RemoveAll
+		// below unlinks a symlink rather than following it, so a Stat judges
+		// one object and acts on another. The consequence
+		// TestTheReaperJudgesTheEntryItRemoves pins is a symlink created
+		// moments ago being destroyed because what it points at is old. The
+		// mirror case -- a long-stale link kept alive forever by a busy
+		// target, or skipped outright because a dangling one fails the stat --
+		// follows from the same confusion but is not exercised: ageing a
+		// symlink's own stamp needs a call the standard library does not
+		// have.
+		info, err := os.Lstat(path)
 		if err != nil || time.Since(info.ModTime()) < buildDirAbandonedAfter {
 			continue
 		}
@@ -504,13 +517,6 @@ func moduleRoot() (string, error) {
 	}
 }
 
-// World is one throwaway environment: a home directory, an environment
-// containing only what the program is allowed to see, and the binary to run.
-//
-// The environment is built up rather than inherited, so a variable the spec
-// reads -- HOME, XDG_CONFIG_HOME, MACKUP_CONFIG -- is never leaked in from the
-// developer's shell and cannot make a case pass on one machine and fail on
-// another.
 // reporter is the part of *testing.T the harness reports failures through.
 //
 // It is an interface for exactly one reason: without a seam here, nothing can
@@ -525,6 +531,13 @@ type reporter interface {
 	Fatalf(format string, args ...any)
 }
 
+// World is one throwaway environment: a home directory, an environment
+// containing only what the program is allowed to see, and the binary to run.
+//
+// The environment is built up rather than inherited, so a variable the spec
+// reads -- HOME, XDG_CONFIG_HOME, MACKUP_CONFIG -- is never leaked in from the
+// developer's shell and cannot make a case pass on one machine and fail on
+// another.
 type World struct {
 	t reporter
 
@@ -865,6 +878,8 @@ type recordingReporter struct {
 	messages []string
 }
 
+// fatalFromRecorder carries a recorded Fatalf out through a panic, so it can
+// be told apart from a genuine one on the way back up.
 type fatalFromRecorder string
 
 func (r *recordingReporter) Helper() {}

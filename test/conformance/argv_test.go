@@ -350,6 +350,74 @@ func TestTheSnapshotWatchesTheWholeScratchRoot(t *testing.T) {
 	}
 }
 
+func TestTheReaperJudgesTheEntryItRemoves(t *testing.T) {
+	// The reaper decides from a stat and acts with RemoveAll, and RemoveAll
+	// unlinks a symlink rather than following it -- so the stat has to be an
+	// Lstat, or the two disagree about which object is under discussion. Under
+	// an os.Stat a symlink created seconds ago is destroyed because the
+	// directory it points at is old, which is the reaper deleting something
+	// that is not abandoned by any reading.
+	//
+	// This is the direction of the defect that can be observed. The other --
+	// a long-stale link that an os.Stat never reaps, because its live target
+	// keeps reporting a fresh stamp -- needs a symlink whose own modification
+	// time has been moved back, and nothing in the standard library can do
+	// that: os.Chtimes follows the link and rewrites the target's stamp
+	// instead, or fails outright when there is no target. Written that way
+	// first, this case could only pass or skip, so it asserts the half it can
+	// actually make fail.
+	//
+	// Swept in a scratch directory rather than the real TMPDIR, which a case
+	// has no business emptying: another conformance run on the same machine
+	// keeps its build directory there.
+	within := t.TempDir()
+	stale := time.Now().Add(-2 * buildDirAbandonedAfter)
+
+	// Outside the swept directory, so the sweep reaches it only through the
+	// link and the case cannot pass by way of the target being reaped too.
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatalf("creating %s: %v", target, err)
+	}
+	if err := os.Chtimes(target, stale, stale); err != nil {
+		t.Fatalf("ageing %s: %v", target, err)
+	}
+
+	link := filepath.Join(within, buildDirPrefix+"link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("this filesystem does not support symlinks: %v", err)
+	}
+
+	fresh := filepath.Join(within, buildDirPrefix+"fresh")
+	abandoned := filepath.Join(within, buildDirPrefix+"abandoned")
+	for _, dir := range []string{fresh, abandoned} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatalf("creating %s: %v", dir, err)
+		}
+	}
+	if err := os.Chtimes(abandoned, stale, stale); err != nil {
+		t.Fatalf("ageing %s: %v", abandoned, err)
+	}
+
+	reapAbandonedBuildDirectories(within)
+
+	// The reason the case exists: the link's own stamp is seconds old.
+	if _, err := os.Lstat(link); err != nil {
+		t.Errorf("the sweep removed %s, which was created moments ago; it was judged by the modification time of what it points at rather than its own", filepath.Base(link))
+	}
+	if _, err := os.Lstat(target); err != nil {
+		t.Errorf("the sweep followed %s and removed what it points at: %v", filepath.Base(link), err)
+	}
+	// And the ordinary behaviour still holds, so the case above cannot be
+	// satisfied by a reaper that reaps nothing at all.
+	if _, err := os.Lstat(abandoned); !os.IsNotExist(err) {
+		t.Errorf("%s went untouched for twice the abandonment window and survived the sweep (lstat error: %v)", filepath.Base(abandoned), err)
+	}
+	if _, err := os.Lstat(fresh); err != nil {
+		t.Errorf("%s was created moments ago and should have survived: %v", filepath.Base(fresh), err)
+	}
+}
+
 func TestExpectUnchangedReportsEveryShapeOfChange(t *testing.T) {
 	// Six cases carry the spec promises no single command states -- --help
 	// touches nothing (appspec/02), a rejected run leaves the filesystem
