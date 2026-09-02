@@ -18,14 +18,16 @@ Specification complete; implementation in progress. Start at
 through altitudes (product contract → architecture → boundary detail).
 
 The command line boundary (invocation grammar, options, dispatch order, exit
-codes) is in place, and so are the two stages behind it: the built-in
-application catalog, and config discovery plus storage-location resolution. So
+codes) is in place, and so are the three stages behind it: the built-in
+application catalog, config discovery plus storage-location resolution, and
+the application database that layers the three definition directories. So
 every subcommand except `--help` and `--version` now reads your real
-`~/.mackup.cfg` and resolves your real storage location before it does
-anything else, and aborts there if either is wrong. The environment gate, the
-application database that layers the three definition directories, and the
-sync operations themselves are not yet — a subcommand that gets past the
-config still reports itself as unimplemented.
+`~/.mackup.cfg`, resolves your real storage location, and assembles the
+database from `~/.mackup/`, `$XDG_CONFIG_HOME/mackup/applications/` and the
+built-in set before it does anything else, and aborts there if any of the
+three is wrong. The environment gate and the sync operations themselves are
+not yet, and nothing prints the database: a subcommand that gets past
+assembly still reports itself as unimplemented.
 
 ## Implementation
 
@@ -125,6 +127,56 @@ deliberately, since the reference exits 1 on an uncaught exception too, and a
 second exit code would be a contract this program invented. The reasoning is
 written out in `internal/fault/fault.go`; argue with it there.
 
+### The application database
+
+`internal/appdb/` is the third stage: `appspec/05`'s map from application key
+to display name and home-relative file set. It is assembled before dispatch,
+so a single bad definition aborts `list` and `show` exactly as it aborts a
+sync command. Nothing prints it yet — `dispatch` receives it, and the three
+enumeration lookups `appspec/05` names (all keys, display name, file set) wait
+on `list`.
+
+Precedence is decided **by filename, before any file is read**. The three
+directories — `~/.mackup/`, `$XDG_CONFIG_HOME/mackup/applications/`, and the
+built-in set — arrive as three `fs.FS` values, are scanned for their `*.cfg`
+names, and only the winner for each key is opened. So a user's `vim.cfg` does
+not merely override the shipped one, it keeps it from ever being parsed: a
+shadowed definition that would abort the program on its own is silent, and the
+conformance suite asserts both halves of that. The built-in directory is not
+privileged — `internal/catalog` hands over a filesystem rather than a parsed
+map, so one implementation of the rule covers all three.
+
+Two rejections are contract rather than input hygiene, because `appspec/05`
+says the sync engine of `appspec/06` relies on them "without re-checking": an
+absolute path in either path section, and an `$XDG_CONFIG_HOME` outside the
+home directory. The XDG base is checked **up front**, not when the first
+`[xdg_configuration_files]` entry needs relativizing — `appspec/05` says it
+blocks every command, and a lazy check only blocks the commands whose winning
+definitions happen to carry that section. A unit case and a conformance case
+both pin the order, by racing it against the absolute-path refusal.
+
+There is a third condition this package deliberately does **not** make fatal.
+A `..` element in a definition path escapes the home directory just as a
+leading `/` does, so the home-relativity guarantee is weaker than its wording
+— but `appspec/05` enumerates its rejections and `appspec/00` makes the
+reference the contract, so a third one would abort a run the reference
+completes. The exposure is recorded as a ticket rather than closed by
+inventing contract; the reasoning is in the package doc, and that is where to
+argue with it.
+
+`internal/ini/` and `internal/homepath/` came out of `internal/config/` when
+this stage landed, and each holds exactly one rule that two stages share.
+`ini` is the dialect both file kinds use, with the case of keys as its only
+parameter — `LowercaseKeys` for the config's application lists, `ExactKeys`
+for a definition. That is the case-policy pair `appspec/03` and `appspec/05`
+state as one paired rule, expressed as one argument rather than as two parsers
+asked to keep agreeing about comments and whitespace forever. `homepath` holds
+`~`-expansion, resolution against home, the `$XDG_CONFIG_HOME` default, and
+the containment question — which `appspec/03` asks of the config file and
+`appspec/05` asks of the XDG base. A copy in each package would let the two
+answer differently for the same path, and the program would then read its
+config from one directory while relativizing definitions against another.
+
 ### The conformance suite
 
 `test/conformance/` builds the command and observes it the way
@@ -189,9 +241,12 @@ fallback token `unknown` otherwise, per the spec's provenance rule.
 | `internal/cli/` | argv grammar, options, usage errors (`appspec/02`) |
 | `internal/app/` | The startup pipeline and subcommand dispatch (`appspec/01` §4) |
 | `internal/catalog/` | The built-in application definitions that ship with the program (`appspec/05`) |
-| `internal/config/` | Config discovery, the INI dialect, the application lists (`appspec/03`) |
+| `internal/config/` | Config discovery, storage-location resolution, the application lists (`appspec/03`) |
 | `internal/storage/` | The four storage engines behind one resolver (`appspec/04`) |
 | `internal/sqlite/` | Read-only reader for the one `google_drive` query (`appspec/04`) |
+| `internal/appdb/` | The application database: definition format, discovery, precedence (`appspec/05`) |
+| `internal/ini/` | The INI dialect both file kinds share (`appspec/03`, `appspec/05`) |
+| `internal/homepath/` | Home-relative path rules shared by config and definitions (`appspec/03`, `appspec/05`) |
 | `internal/fault/` | The guarded / unguarded failure regimes (`appspec/01` §6, `appspec/02`) |
 | `internal/ui/` | The two output streams (`appspec/07`) |
 | `internal/version/` | Version-string resolution (`appspec/00` provenance) |
