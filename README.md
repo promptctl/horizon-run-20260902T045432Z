@@ -37,9 +37,25 @@ string — is the specification's. `macklebox` is the project and module name
 only.
 
 ```sh
-make build     # -> bin/mackup   (release builds stamp VERSION=x.y.z)
-make check     # go vet, go test, gofmt check
+make build        # -> bin/mackup   (release builds stamp VERSION=x.y.z)
+make check        # go vet, go test (unit + conformance), gofmt check
+make conformance  # the black-box suite alone
 ```
+
+### The conformance suite
+
+`test/conformance/` builds the command and observes it the way
+[`appspec/00-overview.md`](appspec/00-overview.md) says the specification
+itself was written: running the real program under a throwaway home directory
+and watching its boundary — stdout, stderr, the exit code, and the filesystem
+it leaves behind. Nothing in it reaches inside the program.
+
+Because the spec promises things no single command states — that `--help`
+touches nothing, that a rejected run makes no filesystem change, that
+`--dry-run` mutates nothing — a case can snapshot the home directory and assert
+it is unchanged, not merely that the output looked right. A case that can only
+be checked by calling an internal function belongs in that package's own tests
+instead.
 
 `--version` reports the package's own version when one was stamped in, and the
 fallback token `unknown` otherwise, per the spec's provenance rule.
@@ -54,4 +70,5 @@ fallback token `unknown` otherwise, per the spec's provenance rule.
 | `internal/app/` | The startup pipeline and subcommand dispatch (`appspec/01` §4) |
 | `internal/ui/` | The two output streams (`appspec/07`) |
 | `internal/version/` | Version-string resolution (`appspec/00` provenance) |
+| `test/conformance/` | Black-box suite: runs the built command under a throwaway `HOME` |
 | `LICENSE`  | MIT |
