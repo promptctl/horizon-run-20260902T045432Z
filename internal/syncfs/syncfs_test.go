@@ -267,6 +267,53 @@ func TestCopyFollowsASymlinkedSourceAndWritesARealFile(t *testing.T) {
 	expectPerm(t, dst, 0o600)
 }
 
+// TestCopyDescendsIntoASymlinkedDirectoryInsideTheSourceTree pins the
+// deliberate opposite of TestClampDoesNotDescendThroughASymlinkedDirectory, so
+// that the asymmetry between the two walks is a decision on the record.
+//
+// The contents arrive as real files and the link is not reproduced, which is
+// what makes a storage folder portable: a link copied as a link points at a
+// path that exists on the machine that made it and nowhere else. It is also
+// what the reference does -- shutil.copytree's default symlinks=False follows
+// and copies contents, verified against the library rather than recalled.
+//
+// The consequence is asserted rather than only permitted, because it is the
+// surprising one: a config directory holding a link to a large tree elsewhere
+// duplicates that tree into storage. That is the reference's behavior and the
+// application database's decision about which paths to manage, not this
+// primitive's to override -- but a reader meeting it for the first time should
+// find it pinned rather than inferred.
+func TestCopyDescendsIntoASymlinkedDirectoryInsideTheSourceTree(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "src", "app")
+	dst := filepath.Join(root, "dst", "app")
+	outside := filepath.Join(root, "outside")
+	writeFile(t, filepath.Join(outside, "inside.conf"), 0o644, "linked content")
+	writeFile(t, filepath.Join(src, "plain.conf"), 0o644, "plain content")
+	symlink(t, outside, filepath.Join(src, "linkdir"))
+
+	if err := Copy(src, dst); err != nil {
+		t.Fatalf("Copy: %v", err)
+	}
+	copied := filepath.Join(dst, "linkdir")
+	info, err := os.Lstat(copied)
+	if err != nil {
+		t.Fatalf("lstat %s: %v", copied, err)
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		t.Fatalf("%s was reproduced as a symlink, want a real directory", copied)
+	}
+	if got := contentOf(t, filepath.Join(copied, "inside.conf")); got != "linked content" {
+		t.Fatalf("the linked directory's contents were not copied; got %q", got)
+	}
+	// And the clamp reached through the descent, since the copied entries are
+	// ordinary files and directories to it by the time it walks them.
+	expectPerm(t, copied, 0o700)
+	expectPerm(t, filepath.Join(copied, "inside.conf"), 0o600)
+	// The source side is untouched: descending copies, it does not move.
+	expectPerm(t, filepath.Join(outside, "inside.conf"), 0o644)
+}
+
 // TestCopyingSomethingThatIsNeitherAFileNorADirectoryIsAnError pins appspec/06's
 // fourth copy clause, and pins it for an entry nested inside a source tree as
 // well as for the path handed in.

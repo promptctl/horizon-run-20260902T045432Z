@@ -150,6 +150,26 @@ func copyFile(src, dst string) error {
 // on the destination first would make a directory copy destructive in a way no
 // section of the specification describes, and would break the merge that lets a
 // second machine's storage folder accumulate files the first one does not have.
+//
+// Entries are classified with a following stat, so a symlink to a directory is
+// DESCENDED INTO and its contents written as real files. That is the opposite
+// of what clampTree does with the same kind of entry, and the asymmetry is a
+// decision rather than an oversight: the two walks answer different questions.
+// Copy is about content, and reproducing a link inside the storage folder would
+// leave the second machine pointing at a path that exists only on the first --
+// which is the portability the storage folder is for. Clamp is about
+// permissions, where descending would mutate files outside the tree the program
+// was asked to manage. Both match the reference: shutil.copytree's default
+// symlinks=False follows and copies contents, verified rather than recalled,
+// and its walk does not skip live links either.
+//
+// The cost is the reference's too, and is left as the reference leaves it. A
+// tree holding a directory symlink is copied with that subtree duplicated into
+// storage, and a self-referential one recurses on a growing path until the
+// operating system returns ELOOP. Neither is silent: the second surfaces as an
+// ordinary per-file copy failure, which appspec/06's partial-failure contract
+// records as data and reports in the end-of-run summary, failing that file
+// rather than the run.
 func copyTree(src, dst string) error {
 	if err := os.MkdirAll(dst, dirMode); err != nil {
 		return err

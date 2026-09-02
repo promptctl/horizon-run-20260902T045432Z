@@ -1029,6 +1029,9 @@ MUTATIONS = [
  #       TestCopyMergesIntoAnExistingDestinationDirectory
  #   a directory copy does not recurse                    copyTree's IsDir arm -> nil
  #       TestACopiedDirectoryTreeIsClamped0700And0600Recursively
+ #   a directory copy stops at a symlinked directory      copyTree's IsDir arm gains a
+ #                                                        ModeSymlink guard
+ #       TestCopyDescendsIntoASymlinkedDirectoryInsideTheSourceTree
  #   the copy classifies with Lstat                       Copy's os.Stat(src) -> os.Lstat(src)
  #       TestCopyFollowsASymlinkedSourceAndWritesARealFile
  #   delete of an absent path is an error                 Delete's IsNotExist arm removed
