@@ -46,7 +46,9 @@ FILES = ["test/conformance/harness_test.go", "test/conformance/argv_test.go",
          "internal/cli/usage.go", "internal/app/dispatch.go", "internal/app/app.go",
          "internal/cli/parse.go", "Makefile",
          "internal/version/version.go",
-         "internal/ui/color.go"]
+         "internal/ui/color.go",
+         "internal/config/config.go", "internal/storage/storage.go",
+         "internal/fault/fault.go"]
 
 H = "test/conformance/harness_test.go"
 C = "internal/ui/color.go"
@@ -64,6 +66,9 @@ A = "internal/app/app.go"
 P = "internal/cli/parse.go"
 V = "internal/version/version.go"
 G = "test/conformance/argv_test.go"
+CF = "internal/config/config.go"
+ST = "internal/storage/storage.go"
+FA = "internal/fault/fault.go"
 
 # SURVIVES marks an entry that must NOT break the gate. Most entries are
 # defects the suite has to catch; these are the opposite -- correct code that a
@@ -515,6 +520,103 @@ MUTATIONS = [
    repl(H, '\tdir, err := os.Getwd()\n\tif err != nil {\n\t\treturn "", fmt.Errorf("locating the module root: %v", err)\n\t}',
       '\t_, thisFile, _, _ := runtime.Caller(0)\n\tdir := filepath.Dir(thisFile)')],
    "no go.mod above"),
+
+ # --- appspec/03 config and appspec/04 storage (macklebox-resolvers-5iw.2) ---
+ #
+ # Entries here, and not a deferral banner like the catalog one below, because
+ # config load is the one stage that IS observable today: appspec/02 puts every
+ # subcommand except --help and --version behind it, so a config defect aborts
+ # `list` at the boundary with a diagnostic the rig reads. Each of the five
+ # below was applied in a copied tree and put to `make conformance` separately
+ # before it was written down; none reported RIG-BLIND.
+ #
+ # Each `expect` names the diagnostic `make check` actually prints for that
+ # mutation, which for the first three is a UNIT one -- internal/config and
+ # internal/storage run before the conformance suite and stop it -- and for the
+ # last two is the conformance one, because there the unit packages pass. That
+ # asymmetry is not a slip; it is the rule the appspec/07 banner above states,
+ # applied per entry rather than assumed. The [rig: ...] note on each kill line
+ # is what carries the conformance half of the claim.
+ #
+ # One property is deliberately NOT here: Config.Scope's "the denylist wins
+ # over the allowlist". No non-test caller invokes Scope yet -- `list` is wired
+ # to the catalog by macklebox-resolvers-5iw.4 -- so flipping it is killed by
+ # internal/config alone and reports RIG-BLIND, accurately and uselessly. This
+ # is the same call as the catalog deferral below, for the same reason. Add it
+ # with .4, alongside the two catalog entries that banner names.
+
+ # appspec/03 "Home-directory containment". Deleting the check is the shape a
+ # reimplementation reaches for when the check looks like a redundant guard on
+ # a path the program itself computed -- it is not, because two of the three
+ # discovery candidates come from the environment.
+ ("the home-containment check is deleted", [repl(CF,
+   '\tif !insideHome(path, home) {\n'
+   '\t\t// appspec/03 "Home-directory containment": checked at construction\n'
+   '\t\t// and applied to a discovered path as much as to an explicitly named\n'
+   '\t\t// one, which is why this sits outside configPath\'s two branches\n'
+   '\t\t// rather than inside the explicit one.\n'
+   '\t\treturn nil, fault.Guardedf("The config file \'%s\' is not in your home directory. Aborting.", path)\n'
+   '\t}\n', '')],
+   'Load succeeded, want "Error: The config file '),
+
+ # appspec/03 "Discovery and precedence": ~/.mackup.cfg "always wins if
+ # present". Prepending rather than appending is a one-word slip that leaves
+ # all three candidates in play and every single-candidate case passing, so it
+ # is only visible to a case that sets TWO of them at once.
+ ("MACKUP_CONFIG is checked before the home config", [repl(CF,
+   "\t\tcandidates = append(candidates, absolute(expandTilde(env.MackupConfig, home)))",
+   "\t\tcandidates = append([]string{absolute(expandTilde(env.MackupConfig, home))}, candidates...)")],
+   'the config read was "from-mackup-config", want the home directory\'s ~/.mackup.cfg'),
+
+ # The appspec/04 trap, and the only entry here for a mutation that ADDS
+ # correct-looking code rather than removing it. appspec/04 clause 2 says the
+ # file_system engine must NOT check that its path exists, because the uniform
+ # "Unable to find the storage folder: <path>" belongs to the environment gate
+ # -- so a stat here does not break a postcondition, it moves a message to the
+ # wrong stage. Nothing in the tree but the two tests this kills says so.
+ ("the file_system engine gains an existence check", [repl(ST,
+   '\tif filepath.IsAbs(f.path) {\n'
+   '\t\treturn f.path, nil\n'
+   '\t}\n'
+   '\treturn filepath.Join(f.home, f.path), nil\n'
+   '}',
+   '\troot := f.path\n'
+   '\tif !filepath.IsAbs(root) {\n'
+   '\t\troot = filepath.Join(f.home, root)\n'
+   '\t}\n'
+   '\tif info, err := os.Stat(root); err != nil || !info.IsDir() {\n'
+   '\t\treturn "", fault.Guardedf("Unable to find the storage folder: %s", root)\n'
+   '\t}\n'
+   '\treturn root, nil\n'
+   '}')],
+   'want the path itself: appspec/04 forbids an existence check in this engine'),
+
+ # appspec/07 requires every coloured string to end in a reset, and two guarded
+ # rows -- the provider block and the legacy-config refusal -- are multi-line.
+ # One Say per diagnostic colours the first line and leaves the rest bare, and
+ # the collapse is invisible to every single-line failure, which is most of
+ # them. The import goes with it because compiling is a precondition of the
+ # mutation counting: an unused "strings" is a build break, and a build break
+ # proves nothing about the rig.
+ ("reportFatal writes a multi-line diagnostic in one Say", [
+   repl(A, '\tfor _, line := range strings.Split(fault.Diagnostic(err), "\\n") {\n'
+           '\t\tstreams.Say(ui.Fatal, line)\n'
+           '\t}',
+           "\tstreams.Say(ui.Fatal, fault.Diagnostic(err))"),
+   repl(A, '\t"errors"\n\t"strings"\n', '\t"errors"\n')],
+   'want it to end in a reset; appspec/07: every colored string is terminated with a reset'),
+
+ # The regime split of appspec/01 section 6 and appspec/02, which both PERMIT
+ # collapsing the unguarded rows into clean exits. This program declines that
+ # permission and keeps the two shapes apart -- "Error: <sentence>" for
+ # guarded, "mackup: <text naming the offending value>" for unguarded -- and
+ # the reasoning is written out in internal/fault/fault.go. A split nothing can
+ # observe is not a split, so this entry is what makes the decision hold:
+ # giving the unguarded regime the guarded opener has to redden the gate.
+ ("the unguarded regime takes the guarded opener", [repl(FA,
+   '\treturn &Error{Regime: Unguarded, Message: "mackup: " + fmt.Sprintf(format, args...)}',
+   '\treturn &Error{Regime: Unguarded, Message: "Error: " + fmt.Sprintf(format, args...)}')],
+   'want a shape distinct from the guarded rows'),
 
  # --- appspec/05 the built-in application catalog (macklebox-resolvers-5iw.1) -
  #

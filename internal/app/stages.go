@@ -1,6 +1,9 @@
 package app
 
-import "github.com/promptctl/macklebox/internal/cli"
+import (
+	"github.com/promptctl/macklebox/internal/cli"
+	"github.com/promptctl/macklebox/internal/config"
+)
 
 // The startup stages between argv parsing and dispatch are stubs until the
 // resolver tickets land. They exist now so the dispatch order of
@@ -11,9 +14,22 @@ import "github.com/promptctl/macklebox/internal/cli"
 // loadConfig resolves the user config file and, with it, the storage location
 // (appspec/03, appspec/04).
 //
-// TODO(macklebox-resolvers-5iw.2): implement; a failure here must abort every
-// subcommand, including list and show.
-func loadConfig(cli.Invocation) error { return nil }
+// It is a seam of two lines because everything it does belongs to the packages
+// it calls: internal/config owns discovery, parsing and validation, and
+// internal/storage owns the four engines. What this function contributes is
+// the pipeline position -- appspec/02 requires the config to load before
+// dispatch for EVERY subcommand, so a failure here aborts list and show
+// exactly as it aborts the sync commands.
+//
+// The environment is read here rather than inside config.Load so that the one
+// place the process's own environment is consulted is on the path from Main,
+// where every other ambient input is read too.
+func loadConfig(inv cli.Invocation) (*config.Config, error) {
+	return config.Load(
+		config.Override{Path: inv.Opts.ConfigFile, Set: inv.Opts.ConfigFileSet},
+		config.EnvironmentFromOS(),
+	)
+}
 
 // assembleApplicationDatabase builds the key -> (display name, file set) table
 // from the layered definition directories (appspec/05).
@@ -32,6 +48,10 @@ func assembleApplicationDatabase(cli.Invocation) error { return nil }
 // shown". Creating the folder from this seam would make `backup frobnicate`
 // prompt and create before rejecting the key.
 //
+// It takes the config because the storage-root existence check is a check on
+// the root the config resolved -- and that is where appspec/04's deliberately
+// missing file_system existence check is finally enforced.
+//
 // TODO(macklebox-resolvers-5iw.4): implement the root guard and storage-root
 // existence check.
-func environmentGate(cli.Invocation) error { return nil }
+func environmentGate(cli.Invocation, *config.Config) error { return nil }

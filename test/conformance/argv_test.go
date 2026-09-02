@@ -243,13 +243,21 @@ func TestHelpAndVersionStopTheArgvScanWhereTheyAreFound(t *testing.T) {
 	// claimed: any breakage exiting 1 with something on stderr satisfied it,
 	// including ones where --help was never taken as the -c argument at all.
 	//
-	// The stage that ends this run is going to move, and this case is meant to
-	// fail when it does. Once loadConfig lands (macklebox-resolvers-5iw.2)
-	// "--help" is a config path that neither exists nor sits inside the home
-	// directory, so the run aborts at the config gate and never reaches
-	// dispatch. Replace this with the config-error message then, the same way
-	// every other ExpectNotImplemented is replaced as its command lands.
-	NewWorld(t).Run("-c", "--help", "list").ExpectNotImplemented("list")
+	// The stage that ends this run has now moved, as the note replaced here
+	// predicted it would: loadConfig has landed, so "--help" is a config path
+	// and the run aborts at the config gate without reaching dispatch. That is
+	// still a positive assertion that --help was taken as the -c argument --
+	// the diagnostic names the path, and it is a path only this reading
+	// produces.
+	//
+	// appspec/03 resolves a relative -c path against the HOME directory rather
+	// than the working directory, which is why the expected path is under the
+	// world's home.
+	world := NewWorld(t)
+	world.Run("-c", "--help", "list").
+		ExpectExit(1).
+		ExpectStderrLine("Error: The config file '" + world.Path("--help") + "' does not exist. Aborting.").
+		ExpectSilentStdout()
 }
 
 func TestUnrecognizedSubcommandWarnsThenPrintsUsageOnStderr(t *testing.T) {
@@ -381,12 +389,17 @@ func TestFormsMatchingNoUsageLineAreUsageErrors(t *testing.T) {
 
 func TestEveryInvocationFormIsAcceptedAndReachesItsCommand(t *testing.T) {
 	// Every usage line of appspec/02, with the command each form selects.
-	// None can succeed yet -- the resolvers and sync operations are later
-	// tickets -- so what is observable is that the form got past the parser
-	// and reached that command's dispatch arm. Asserting the arm, rather than
-	// the absence of a usage error, is what makes this case able to fail:
-	// "no usage error" also holds when the program is broken in some other
-	// way, or prints its usage block under a different first word.
+	// None can succeed yet -- the sync operations are later tickets -- so what
+	// is observable is that the form got past the parser and reached that
+	// command's dispatch arm. Asserting the arm, rather than the absence of a
+	// usage error, is what makes this case able to fail: "no usage error" also
+	// holds when the program is broken in some other way, or prints its usage
+	// block under a different first word.
+	//
+	// Each world needs a resolvable config now that loadConfig has landed:
+	// appspec/02 puts the config gate before dispatch for every subcommand, so
+	// without one the run dies at the gate and this case would report that the
+	// parser rejected a form it accepted perfectly.
 	for _, test := range []struct {
 		args []string
 		cmd  string
@@ -404,7 +417,9 @@ func TestEveryInvocationFormIsAcceptedAndReachesItsCommand(t *testing.T) {
 		{[]string{"link", "uninstall"}, "link uninstall"},
 		{[]string{"link", "uninstall", "vim"}, "link uninstall"},
 	} {
-		NewWorld(t).Run(test.args...).ExpectNotImplemented(test.cmd)
+		world := NewWorld(t)
+		world.UseResolvableStorage()
+		world.Run(test.args...).ExpectNotImplemented(test.cmd)
 	}
 }
 
@@ -417,12 +432,18 @@ func TestOptionsAreAcceptedOnEitherSideOfTheSubcommand(t *testing.T) {
 	// help text, which appspec/02 declares human-facing and not contract -- and
 	// the remaining forms pin that choice so it cannot be lost by accident,
 	// not because the spec requires it.
+	//
+	// The config gate is satisfied for the same reason it is in the case
+	// above: an option accepted on either side of the subcommand is only
+	// observable once the run gets far enough to reach the subcommand.
 	for _, args := range [][]string{
 		{"-f", "-n", "-v", "-r", "backup", "vim"},
 		{"backup", "vim", "--force", "--dry-run", "--verbose", "--root"},
 		{"--force", "backup", "--dry-run", "vim", "-vr"},
 	} {
-		NewWorld(t).Run(args...).ExpectNotImplemented("backup")
+		world := NewWorld(t)
+		world.UseResolvableStorage()
+		world.Run(args...).ExpectNotImplemented("backup")
 	}
 }
 
@@ -1878,7 +1899,9 @@ func TestEveryFatalDiagnosticIsBrightRedOnStderr(t *testing.T) {
 		{"the force-flag conflict, a literal contract token", []string{"--force", "--force-no", "backup"}},
 		{"a usage error's warning line", []string{"frobnicate"}},
 		{"a usage error from a missing operand", []string{"show"}},
-		{"an unimplemented subcommand", []string{"list"}},
+		{"a storage engine that cannot find its folder", []string{"list"}},
+		{"an explicitly named config file that is not there", []string{"-c", "nope.cfg", "list"}},
+		{"a config file outside the home directory", []string{"-c", "/etc/hosts", "list"}},
 	} {
 		t.Run(c.what, func(t *testing.T) {
 			world.Run(c.argv...).
