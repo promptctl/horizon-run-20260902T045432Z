@@ -515,6 +515,32 @@ MUTATIONS = [
    repl(H, '\tdir, err := os.Getwd()\n\tif err != nil {\n\t\treturn "", fmt.Errorf("locating the module root: %v", err)\n\t}',
       '\t_, thisFile, _, _ := runtime.Caller(0)\n\tdir := filepath.Dir(thisFile)')],
    "no go.mod above"),
+
+ # --- appspec/05 the built-in application catalog (macklebox-resolvers-5iw.1) -
+ #
+ # No entries, deliberately, and this banner is here so the absence is a
+ # decision rather than an oversight.
+ #
+ # macklebox-resolvers-5iw.1 ships internal/catalog: 614 definition files
+ # embedded in the binary, and unit tests that pin them against
+ # appspec/appendix-application-names.md -- the key set, the file naming, the
+ # absolute-path rejection appspec/05 calls load-bearing, and the mackup
+ # self-definition whole-Mackup mode needs. Every one of those is real and
+ # every one of them was checked by hand, in a copied tree, by making the
+ # mutation and reading the diagnostic.
+ #
+ # None of it belongs here YET, for the reason stated at the top of the
+ # appspec/07 banner above: the bar for an internal/ entry is that the
+ # CONFORMANCE suite can kill it, and nothing in the catalog reaches the
+ # program's boundary until `list` and `show` are wired to it. Until then a
+ # mutation to a .cfg file is killed by the unit tests alone and reports
+ # RIG-BLIND -- accurately, and uselessly. This is the same call the
+ # reset-safety deferral above records, for the same reason.
+ #
+ # Add the entries with macklebox-resolvers-5iw.4, which is what makes the
+ # catalog observable. The obvious two: mackup.cfg losing ".mackup.cfg" (the
+ # `show mackup` claim) and a definition file deleted or renamed (the 614-key
+ # `list` claim). Both need internal/catalog paths added to FILES.
 ]
 
 

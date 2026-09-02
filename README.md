@@ -47,6 +47,28 @@ runs it on every pull request and every push to `master`, then `make build` --
 which `check` deliberately does not depend on, for the reason given above that
 target in the Makefile.
 
+### The built-in application catalog
+
+`internal/catalog/applications/` holds one `.cfg` definition per application —
+the lowest-precedence of the three definition directories in `appspec/05`, the
+one "that ships with the program". It is embedded in the binary, because there
+is no install step that could place a directory beside it.
+
+The application **keys** are the specification's:
+[`appspec/appendix-application-names.md`](appspec/appendix-application-names.md)
+records all 614 of them, and a test fails if the shipped set and the appendix
+disagree in either direction. The **display names and file sets are not** — the
+appendix records keys and nothing else, and says so — so every one of them was
+authored for this project from general knowledge of where each program keeps
+its configuration. No definition data was copied from any other implementation;
+the reference build's data files carry its own license, and this repository is
+MIT.
+
+A definition with an empty file set is valid per `appspec/05` and still lists
+and shows, so a key whose paths are not yet authored is not a gap in
+conformance. File-set coverage grows by editing these files; the key set does
+not, and the parity test is what says so.
+
 ### The conformance suite
 
 `test/conformance/` builds the command and observes it the way
@@ -110,6 +132,7 @@ fallback token `unknown` otherwise, per the spec's provenance rule.
 | `cmd/mackup/` | The command entry point |
 | `internal/cli/` | argv grammar, options, usage errors (`appspec/02`) |
 | `internal/app/` | The startup pipeline and subcommand dispatch (`appspec/01` §4) |
+| `internal/catalog/` | The built-in application definitions that ship with the program (`appspec/05`) |
 | `internal/ui/` | The two output streams (`appspec/07`) |
 | `internal/version/` | Version-string resolution (`appspec/00` provenance) |
 | `test/conformance/` | Black-box suite: runs the built command under a throwaway `HOME` |
