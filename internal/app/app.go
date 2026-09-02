@@ -118,7 +118,8 @@ func runPipeline(inv cli.Invocation, streams *ui.IO) int {
 	if err != nil {
 		return reportFatal(streams, err)
 	}
-	if err := assembleApplicationDatabase(inv); err != nil {
+	apps, err := assembleApplicationDatabase()
+	if err != nil {
 		return reportFatal(streams, err)
 	}
 	if err := environmentGate(inv, cfg); err != nil {
@@ -126,7 +127,7 @@ func runPipeline(inv cli.Invocation, streams *ui.IO) int {
 	}
 
 	// Step 6: dispatch to the requested subcommand.
-	return dispatch(inv, streams)
+	return dispatch(inv, streams, apps)
 }
 
 // reportFatal writes a startup failure's diagnostic to stderr and reports the

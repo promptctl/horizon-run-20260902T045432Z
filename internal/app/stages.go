@@ -1,15 +1,17 @@
 package app
 
 import (
+	"github.com/promptctl/macklebox/internal/appdb"
 	"github.com/promptctl/macklebox/internal/cli"
 	"github.com/promptctl/macklebox/internal/config"
 )
 
-// The startup stages between argv parsing and dispatch are stubs until the
-// resolver tickets land. They exist now so the dispatch order of
-// appspec/02-invocation.md ("Command dispatch order and the universal
-// config-load gate") is expressed by the pipeline rather than assumed, and so
-// each resolver drops into a named seam instead of restructuring Main.
+// The startup stages between argv parsing and dispatch. They exist as named
+// seams so the dispatch order of appspec/02-invocation.md ("Command dispatch
+// order and the universal config-load gate") is expressed by the pipeline
+// rather than assumed, and so each resolver drops into its own place instead of
+// restructuring Main. The last of them is still a stub; the ticket that fills
+// it is named on it.
 
 // loadConfig resolves the user config file and, with it, the storage location
 // (appspec/03, appspec/04).
@@ -34,8 +36,21 @@ func loadConfig(inv cli.Invocation) (*config.Config, error) {
 // assembleApplicationDatabase builds the key -> (display name, file set) table
 // from the layered definition directories (appspec/05).
 //
-// TODO(macklebox-resolvers-5iw.3): implement.
-func assembleApplicationDatabase(cli.Invocation) error { return nil }
+// A seam of one line for the reason loadConfig is: internal/appdb owns the
+// definition format, the three-directory precedence and the two rejections. What
+// this function contributes is the pipeline position -- appspec/01 section 4
+// puts database assembly at step 3, after the config and before every gate, so a
+// definition holding an absolute path aborts list and show exactly as it aborts
+// a sync command.
+//
+// It does not take the config. The two stages read the same environment and
+// neither reads the other's result: appspec/03's application lists are applied
+// to the assembled keys by the commands that act on "all applications", not by
+// assembly, and appspec/05's discovery does not consult the config at all.
+// Threading a *config.Config here would suggest otherwise.
+func assembleApplicationDatabase() (*appdb.Database, error) {
+	return appdb.Assemble(appdb.EnvironmentFromOS())
+}
 
 // environmentGate runs level 1 of the lattice in appspec/01 section 4 -- the
 // root guard and storage-root existence -- which every command passes

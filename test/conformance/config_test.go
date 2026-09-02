@@ -655,6 +655,15 @@ func TestTheConfigFileFormatIsReadAsAppspec03Describes(t *testing.T) {
 	// whitespace arrangement, or an unknown section around the engine key; a
 	// parser that mishandled any of them reports a DIFFERENT engine value --
 	// or none, which shows up as the Dropbox default.
+	//
+	// The whole diagnostic is asserted, not "from-config" inside it, and the
+	// difference is the one the mutation battery found: a parser that stopped
+	// stripping comments reports the engine as "from-config ; a comment", which
+	// CONTAINS the wanted substring, so every comment fixture here passed over a
+	// dialect that had lost the rule they exist to check. Observed, by removing
+	// stripComment and watching the conformance suite stay green. The same
+	// vacuity ExpectStdoutLine's comment records for the version value, in the
+	// other stream.
 	for _, c := range []struct{ what, config string }{
 		{"an inline semicolon comment", "[storage]\nengine = from-config ; a comment\n"},
 		{"an inline hash comment", "[storage]\nengine = from-config # a comment\n"},
@@ -664,13 +673,14 @@ func TestTheConfigFileFormatIsReadAsAppspec03Describes(t *testing.T) {
 		{"an unknown section after it", "[storage]\nengine = from-config\n[whatever]\nkey = value\n"},
 		{"a differently-cased key", "[storage]\nENGINE = from-config\n"},
 		{"blank lines throughout", "\n\n[storage]\n\nengine = from-config\n\n"},
+		{"a comment on a bare key", "[applications_to_ignore]\nvim ; a comment\n[storage]\nengine = from-config\n"},
 	} {
 		world := NewWorld(t)
 		writeConfig(world, c.config)
 
 		result := world.Run("list").ExpectFailureExit().ExpectSilentStdout()
-		if !strings.Contains(result.StderrText(), "from-config") {
-			t.Errorf("%s: stderr = %q, want the engine value read as \"from-config\"", c.what, result.Stderr)
+		if got, want := result.StderrText(), "mackup: Unknown storage engine: from-config\n"; got != want {
+			t.Errorf("%s: stderr = %q, want exactly %q: the engine value read verbatim and nothing else", c.what, result.Stderr, want)
 		}
 	}
 }
