@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>name</key>
+	<string>Ada</string>
+	<key>count</key>
+	<integer>7</integer>
+	<key>negative</key>
+	<integer>-2</integer>
+	<key>wide</key>
+	<integer>4294967296</integer>
+	<key>ratio</key>
+	<real>1.5</real>
+	<key>whole</key>
+	<real>1.0</real>
+	<key>on</key>
+	<true/>
+	<key>off</key>
+	<false/>
+	<key>when</key>
+	<date>2001-01-02T03:04:05Z</date>
+	<key>blob</key>
+	<data>aGVsbG8=</data>
+	<key>unicode</key>
+	<string>café — 日本語 🐈</string>
+	<key>empty dict</key>
+	<dict/>
+	<key>empty array</key>
+	<array/>
+	<key>list</key>
+	<array>
+		<string>x</string>
+		<integer>-2</integer>
+		<dict>
+			<key>deep</key>
+			<array>
+				<real>0.25</real>
+			</array>
+		</dict>
+	</array>
+	<key>long</key>
+	<string>0123456789012345678901234567890123456789</string>
+</dict>
+</plist>

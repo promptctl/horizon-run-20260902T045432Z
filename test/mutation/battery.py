@@ -1067,6 +1067,133 @@ MUTATIONS = [
  #     Verified directly, not reasoned about.
  #   * Removing runCleanupCommand's os.Stat guard. exec's own ENOENT is
  #     discarded to the same effect. Both files carry a comment saying so.
+
+ # --- appspec/06 drift detection and the diff detail (macklebox-copy-sync-dpz.2)
+ #
+ # DELIBERATELY EMPTY, on the same call as the banner above and for the same
+ # reason. internal/drift and internal/plist ship the whole of appspec/06 "Drift
+ # detection" -- every comparison class, the unified diff, the directory summary,
+ # and the appspec/07 levels each detail line is printed at -- and NOTHING CALLS
+ # THEM EITHER. dispatch's backup and restore are still
+ # macklebox-copy-sync-dpz.3's, so the conformance rig cannot reach a single
+ # comparison, and an entry written here today would be killed by the unit
+ # packages and then reported RIG-BLIND by the `make conformance` step. That is
+ # the accurate verdict, not a false alarm.
+ #
+ # Each mutation below was injected into a COPY of the tree and its killing case
+ # recorded, so dpz.3 transcribes rather than re-derives. Add
+ # internal/drift/{drift,diff,tree}.go and
+ # internal/plist/{plist,xml,binary,format}.go to FILES in the same commit --
+ # they are absent from it on purpose, since a file in FILES that no mutation
+ # edits is backed up and restored for nothing.
+ #
+ # The injection pass paid for itself twice on this branch, which is the argument
+ # for running one before believing a suite rather than after. It found a defect
+ # in the PROGRAM -- removing the byte comparison ahead of the three arms left
+ # two identical text files reported as differing, because the text arm never
+ # answered "identical" at all and the check above it was documented as an
+ # optimisation -- and a hole in the CASES: the <plist> document-element check
+ # had nothing that could see it, since every not-a-plist fixture was being
+ # refused for some other reason.
+ #
+ # appspec/06 "Drift detection", the comparison classes
+ #   drift classifies with a following stat       Compare's os.Lstat -> os.Stat
+ #       TestEitherPathBeingASymlinkIsDifferingWithNoDetail
+ #   the symlink arm reports agreement            that arm's differs() -> identical()
+ #       TestEitherPathBeingASymlinkIsDifferingWithNoDetail
+ #   the type mismatch is one message either way  "file vs folder" -> "folder vs file"
+ #       TestATypeMismatchIsOneLineSayingWhichWayRound
+ #   the plist arm is gone                        comparePlists call removed
+ #       TestTwoSpellingsOfOnePropertyListAreComparedByContentNotBytes
+ #   the text arm runs before the plist arm       the two arms exchanged
+ #       TestAPropertyListIsComparedAsAStructureAndNotAsMarkup
+ #   an unreadable file is reported as agreement  compareFiles' differs() -> identical()
+ #       TestAnUnreadableFileIsDifferingWithNoDetail  (unix)
+ #   the byte-equality fast path is removed       compareFiles' bytes.Equal arm deleted
+ #       TestTwoIdenticalFilesAreTheIdempotencyFixedPoint
+ #   plist identity is decided before rendering   equalLines -> a length comparison
+ #       TestTwoPropertyListsThatDifferProduceADiffOfTheirStructures
+ #   the no-newline marker is not emitted         markIncomplete returns unchanged
+ #       TestTwoFilesDifferingOnlyInAFinalNewlineDifferAndSayHow
+ #   the detail is printed on the error stream    Print's Say(line.Level) -> CopyFailure
+ #       TestTheDriftDetailGoesToStdout
+ #
+ # appspec/06 "Drift detection", the recursive directory comparison
+ #   a directory entry is classified unfollowed   compare's os.Stat -> os.Lstat
+ #       TestASymlinkInsideATreeIsFollowedSoTheComparisonIsTheCopysFixedPoint
+ #   a tree comparison stops at the file sizes    sameContents returns on equal sizes
+ #       TestADirectoryComparisonIsRecursiveAndNotAShallowStat
+ #   the three lists are not sorted               lines' sort.Strings removed
+ #       TestADirectoryComparisonListsTheThreeGroupsAppspec06AsksFor
+ #   the two only-side lists are swapped          onlySource and onlyTarget exchanged
+ #       TestADirectoryComparisonListsTheThreeGroupsAppspec06AsksFor
+ #   a one-sided directory is descended into      the !inTarget arm lists its entries
+ #       TestADirectoryOnOneSideIsNamedOnceAndNotDescendedInto
+ #   an unreadable subdirectory ends the walk     walk's false result ignored
+ #       TestAnUnreadableDirectoryInsideATreeIsAChangedEntryRatherThanTheEndOfTheWalk (unix)
+ #   an identical tree still reports detail       compareTrees' empty() check disabled
+ #       TestTwoIdenticalTreesAreIdentical
+ #
+ # appspec/06 "a unified diff", and the appspec/07 levels it is decorated with
+ #   the diff has one line of context             context 3 -> 1
+ #       TestTheDiffIsTheOneDiffWouldHavePrinted
+ #   hunks never merge                            the neighbourhood marked is i..i
+ #       TestChangesCloseTogetherShareAHunkAndFarApartDoNot
+ #   a one-line range prints its count            span's count == 1 arm removed
+ #       TestAOneLineRangeOmitsItsCount
+ #   an empty range is numbered from one          span's zero arm uses start+1
+ #       TestAnEmptyRangeIsNumberedTheWayDiffNumbersIt
+ #   the search bound is removed                  maxEdits clamp deleted
+ #       TestTwoFilesWithNothingInCommonFallBackToAWholeFileReplacement
+ #   a context line is printed as an addition     Progress -> DiffAdded in render
+ #       TestEachKindOfDiffLineCarriesTheLevelAppspec07GivesIt
+ #   the diff runs source-to-destination          unified's two sides exchanged
+ #       TestTwoPropertyListsThatDifferProduceADiffOfTheirStructures
+ #
+ # internal/plist, which exists for appspec/06's "both parse as plist files"
+ #   the date epoch is Unix's                     appleEpoch 2001 -> 1970
+ #       TestEveryPropertyListTypeIsReadBackFromBothSpellings
+ #   an eight-byte integer is read unsigned       integer's sign bit masked off
+ #       TestEveryPropertyListTypeIsReadBackFromBothSpellings
+ #   UTF-16 units are widened, not decoded        utf16.Decode -> rune(unit) per unit
+ #       TestTheXMLAndBinarySpellingsOfOneDocumentRenderIdentically
+ #   the count escape is ignored                  sized's 0x0F arm disabled
+ #       TestEveryPropertyListTypeIsReadBackFromBothSpellings
+ #   the offset bounds check is removed           offsetOf's range check deleted
+ #       TestACorruptedBinaryPropertyListIsRefusedRatherThanCrashing
+ #   an unmodelled marker is accepted             object's final refusal -> nil, nil
+ #       TestABinaryPropertyListHoldingAUIDIsRefusedRatherThanModelled
+ #   any XML document element is accepted         the <plist> check deleted
+ #       TestFilesThatAreNotPropertyListsAreRefused
+ #   a string is trimmed like a number            <string> passed through TrimSpace
+ #       TestWhitespaceInsideAStringIsKept
+ #   base64 whitespace is not stripped            the <data> strings.Map removed
+ #       TestBase64DataIsReadAcrossTheLinesCoreFoundationWrapsItOn
+ #   dictionary keys are not sorted               Format's sort.Strings removed
+ #       TestDictionaryKeysAreRenderedInSortedOrder
+ #   a whole real prints as an integer            real's ".0" suffix dropped
+ #       TestTheRenderingTellsEveryValueApart
+ #
+ # One entry has no killing CASE and is listed with what it has, because the
+ # alternative is to leave it out and let the next reader think it was missed:
+ #
+ #   the cycle guard is removed                   object's r.open check deleted
+ #       killed by the gate, not by a case. A self-referential array recurses
+ #       until the goroutine stack is exhausted, which is a fatal error rather
+ #       than a failure, so the package's test binary dies and takes the run
+ #       with it. TestABinaryPropertyListThatContainsItselfIsRefused holds a
+ #       timeout arm for the other shape of the same defect -- one that returns
+ #       eventually -- and that arm names the case when it fires.
+ #
+ # One mutation was injected and is NOT listed, because it survived and
+ # deserves to: it is behaviour-preserving, so an entry for it would be a
+ # standing false alarm rather than a hole. Recorded so the next reader does not
+ # rediscover it and "fix" the tests to catch what is not there.
+ #
+ #   * sameContents' `return firstDone && secondDone` -> `return true`. A chunk
+ #     short on one side only is a chunk of a different length, which the byte
+ #     comparison immediately above has already rejected, so the conjunction is
+ #     implied. The line carries a comment saying so.
 ]
 
 
