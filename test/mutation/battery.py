@@ -1173,6 +1173,10 @@ MUTATIONS = [
  #       TestDictionaryKeysAreRenderedInSortedOrder
  #   a whole real prints as an integer            real's ".0" suffix dropped
  #       TestTheRenderingTellsEveryValueApart
+ #   the XML nesting guard is removed             element's depth >= maxDepth deleted
+ #       TestADeeplyNestedPropertyListIsRefusedRatherThanCrashing
+ #   the binary nesting guard is removed          object's len(r.open) >= maxDepth deleted
+ #       TestADeeplyNestedPropertyListIsRefusedRatherThanCrashing
  #
  # One entry has no killing CASE and is listed with what it has, because the
  # alternative is to leave it out and let the next reader think it was missed:
