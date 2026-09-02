@@ -22,9 +22,22 @@ build:
 	go build $(LDFLAGS) -o "$(BINARY)" $(PKG)
 
 # Every package but the conformance suite, which is run separately below; see
-# the conformance target for why. An empty package list would make `go test`
-# fall through to the current directory and report success having run nothing,
-# so the list is checked before it is used.
+# the conformance target for why.
+#
+# The `conformance` build tag is what actually excludes it here, not the grep:
+# every file in that package is behind the tag, so `go list ./...` untagged
+# reports five packages and omits it silently, exiting 0. Verified, against
+# `go list -tags conformance ./...`, which reports six. The grep therefore
+# matches nothing today and the guard after it has never fired. Both stay, and
+# are described as what they are -- cover for a tree where the tag is dropped
+# or narrowed, in which case this cached `go test` run would start executing
+# the conformance suite, which is the single thing the three mechanisms in
+# harness_test.go's header exist to prevent. Do not delete them as dead code,
+# and do not read them as the reason the package is absent.
+#
+# An empty package list would make `go test` fall through to the current
+# directory and report success having run nothing, so the list is checked
+# before it is used.
 #
 # go list runs on its own line because a pipeline reports the exit status of
 # its LAST command: written as `go list ./... | grep -v ...`, a go list that

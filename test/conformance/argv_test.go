@@ -141,32 +141,59 @@ func TestHelpAndVersionStopTheArgvScanWhereTheyAreFound(t *testing.T) {
 	NewWorld(t).Run("--help", "--nope").ExpectExit(0).ExpectStdout(usageMarker)
 	NewWorld(t).Run("--version", "-z").ExpectExit(0).ExpectStdout("Mackup ")
 
-	// An option that genuinely came first is still rejected.
-	NewWorld(t).Run("--nope", "--help").ExpectExit(1).ExpectStderr("--nope")
+	// An option that genuinely came first is still rejected, and the --help
+	// behind it is not honored -- which is what the silent stdout says, since
+	// honoring it would have put the usage block there.
+	//
+	// Non-zero rather than 1, for the reason the usage-error table gives at
+	// length: the code a parser answers with is not contract, and that table's
+	// {"--nope", "list"} is this same rejection, left unpinned. Pinning it
+	// here failed a reimplementation answering the conventional 2 that the
+	// table deliberately passes.
+	NewWorld(t).Run("--nope", "--help").
+		ExpectFailureExit().
+		ExpectStderr("--nope").
+		ExpectSilentStdout()
 
 	// -c takes an argument, so --help here is that argument, not the flag:
 	// this is a `list` run with a nonsense config path, not a help request.
 	//
-	// What is asserted is the parser property alone -- help was not printed --
-	// because the stage that rejects this run is going to move. Today nothing
-	// reads the config and it reaches dispatch; once loadConfig lands
-	// (macklebox-resolvers-5iw.2) "--help" is a config path that does not
-	// exist and is not inside the home directory, so the run will abort at the
-	// config gate instead. Both end at exit 1 with nothing on stdout, whereas
-	// --help taken as the flag would exit 0 with the usage block on stdout,
-	// and a crash would not exit 1 at all. Tighten this to the config-error
-	// message when that ticket lands.
-	result := NewWorld(t).Run("-c", "--help", "list").
-		ExpectExit(1).
-		ExpectSilentStdout()
-	if result.Stderr == "" {
-		t.Error("mackup -c --help list said nothing at all; want a diagnostic on stderr")
-	}
+	// Asserted the way every other "this form was accepted" case is: the run
+	// reached its dispatch arm, positively. The earlier spelling asked for
+	// exit 1 and a non-empty stderr, and the 1 it matched came from the
+	// not-implemented stub -- scaffolding of exactly the kind
+	// ExpectNotImplemented exists to quarantine, read as though it were the
+	// spec's exit code for this form. It also could not fail for the reason it
+	// claimed: any breakage exiting 1 with something on stderr satisfied it,
+	// including ones where --help was never taken as the -c argument at all.
+	//
+	// The stage that ends this run is going to move, and this case is meant to
+	// fail when it does. Once loadConfig lands (macklebox-resolvers-5iw.2)
+	// "--help" is a config path that neither exists nor sits inside the home
+	// directory, so the run aborts at the config gate and never reaches
+	// dispatch. Replace this with the config-error message then, the same way
+	// every other ExpectNotImplemented is replaced as its command lands.
+	NewWorld(t).Run("-c", "--help", "list").ExpectNotImplemented("list")
 }
 
 func TestUnrecognizedSubcommandWarnsThenPrintsUsageOnStderr(t *testing.T) {
+	// Non-zero rather than 1, for the reason
+	// TestFormsMatchingNoUsageLineAreUsageErrors spells out over this very
+	// argv: it runs {"frobnicate"} too and asserts only that the run failed.
+	// appspec/02 says of the parser's exit code that "matching the exact exit
+	// code here is not load-bearing for callers", and appspec/07's error table
+	// does not list usage errors among the conditions it gives exit 1. So a
+	// reimplementation answering the conventional 2 passed there and failed
+	// here, on identical input -- the rule was applied to the table and not to
+	// the case standing beside it. That this implementation answers 1 is
+	// pinned in internal/app's case of the same name.
+	//
+	// What is contract here, and is why this case exists apart from the table:
+	// appspec/02 says an unrecognized positional "prints a warning line
+	// identifying the unmatched argument, then the usage block", and appspec/07
+	// puts both on stderr. The order is asserted below.
 	result := NewWorld(t).Run("frobnicate").
-		ExpectExit(1).
+		ExpectFailureExit().
 		ExpectStderr("frobnicate").
 		ExpectStderr(usageMarker).
 		ExpectSilentStdout()
