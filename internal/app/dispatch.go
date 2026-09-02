@@ -6,24 +6,30 @@ import (
 	"github.com/promptctl/macklebox/internal/ui"
 )
 
-// dispatch runs the subcommand argv selected. Each arm is filled in by the
-// ticket named beside it; until then a subcommand reports that it is not
-// implemented on stderr and exits non-zero, so no caller can mistake an
-// unimplemented verb for a completed action.
+// dispatch runs the subcommand argv selected. The two enumeration commands of
+// appspec/05 are implemented; each remaining arm is filled in by the ticket
+// named beside it, and until then reports that it is not implemented on stderr
+// and exits non-zero, so no caller can mistake an unimplemented verb for a
+// completed action.
 //
 // The assembled application database is passed in rather than built here: every
 // command reads the same one, and appspec/01 section 4 assembles it before
 // dispatch so that a refused definition aborts the run whatever the subcommand
-// was. No arm reads it yet -- the enumeration lookups have their first caller in
-// macklebox-resolvers-5iw.4.
+// was. The list and show arms are its first readers; every sync arm will read
+// the same value rather than assembling a second.
 func dispatch(inv cli.Invocation, streams *ui.IO, apps *appdb.Database) int {
 	switch inv.Cmd {
-	case cli.CmdList, cli.CmdShow:
-		// TODO(macklebox-resolvers-5iw.4): the appspec/05 enumeration
-		// formats -- sorted keys with the count trailer, display name with
-		// sorted file paths -- read through apps.Keys, apps.Name and
-		// apps.Files.
-		return notImplemented(inv, streams)
+	case cli.CmdList:
+		return list(streams, apps)
+	case cli.CmdShow:
+		// The key is validated inside show, which is to say AFTER the
+		// environment gate this dispatch already ran. That is where
+		// appspec/02 puts it: its "validated before the environment check"
+		// rule names backup, restore, link, link install and link uninstall
+		// -- the commands whose gate creates a folder or shows a prompt --
+		// and show is not one of them, because there is nothing for an
+		// unknown key to fail cleanly ahead of.
+		return show(streams, apps, inv.Application)
 	case cli.CmdBackup, cli.CmdRestore:
 		// TODO(macklebox-copy-sync-dpz.3): the one copy operation, run in
 		// either direction (appspec/01 section 1).

@@ -3,28 +3,26 @@
 // The application-database half of the suite: appspec/05-application-database.md
 // observed at the program's boundary.
 //
-// One channel carries almost every case here, for the same reason the config
-// file's header gives for its own: nothing this program can do yet PRINTS the
-// database. list and show are macklebox-resolvers-5iw.4's. What the boundary
-// does expose is appspec/05's own absolute-path rejection -- a fatal error that
+// Two channels carry the cases here, and they are complementary rather than
+// redundant.
+//
+// The first is appspec/05's own absolute-path rejection -- a fatal error that
 // names the offending path and aborts every command -- so a definition file
 // carrying "/etc/passwd" reports itself when it is read, and stays silent when
-// it is not. That makes "this directory is read", "this file wins", and "that
-// file was not read at all" directly observable without inventing any output
-// the specification does not describe.
+// it is not. That makes "this directory is read" and "this file wins" directly
+// observable, and it is the ONLY channel for the silent half: that a shadowed
+// definition is "not read at all for that key" (appspec/05) rather than merely
+// outranked, which no listing can show, because a key that was outranked and a
+// key that was never parsed produce the same line.
 //
-// The silent half is asserted through ExpectNotImplemented, which is this
-// suite's placeholder for a command whose ticket has not landed: a run that
-// reaches the dispatch stub is a run that got past database assembly. Those uses
-// become assertions on real list output with macklebox-resolvers-5iw.4, the same
-// replacement the README describes for every other use of it.
-//
-// What that leaves out, said rather than glossed: the CONTENTS of the assembled
-// database -- that a dropped definition adds a listable key, that display names
-// and file sets read back as written, that an XDG entry is stored home-relative
-// -- are pinned by internal/appdb's own tests today, because no command prints
-// them yet. The cases below assert what is observable now: which directories are
-// read, which file wins, and that the two rejections abort every command alike.
+// The second is `list` and `show` themselves, which macklebox-resolvers-5iw.4
+// wired to the database. Where a case used to assert the silent half through
+// ExpectNotImplemented -- this suite's placeholder for a command whose ticket
+// has not landed -- it now asserts the listing that command actually prints,
+// which says the same thing and more: not just "assembly did not refuse" but
+// "these are the keys it assembled". The cases that pin display names and file
+// sets, which nothing outside internal/appdb could see before, are in
+// enumerate_test.go.
 
 package conformance
 
@@ -262,7 +260,14 @@ func TestTheLegacyDirectoryShadowsTheXDGOneByFilename(t *testing.T) {
 	shadowing.UseResolvableStorage()
 	shadowing.WriteFile(".config/mackup/applications/myapp.cfg", poisonedDefinition, 0o600)
 	shadowing.WriteFile(".mackup/myapp.cfg", cleanDefinition("From Legacy"), 0o600)
-	shadowing.Run("list").ExpectNotImplemented("list")
+	// Both halves of "wins", now that the winner is observable: the run does
+	// not refuse -- so the shadowed definition was never parsed -- and the key
+	// carries the LEGACY file's display name, so the file that won is the one
+	// appspec/05 says wins. Before list printed, only the first half could be
+	// asserted, and a program that read both files and kept the wrong name
+	// passed.
+	expectListed(t, shadowing.Run("list"), "myapp")
+	shadowing.Run("show", "myapp").ExpectExit(0).ExpectStdout("Name: From Legacy")
 
 	shadowed := NewWorld(t)
 	shadowed.UseResolvableStorage()
@@ -304,7 +309,19 @@ func TestOnlyCfgFilesDirectlyInADefinitionDirectoryAreRead(t *testing.T) {
 		world.WriteFile(name, poisonedDefinition, 0o600)
 	}
 
-	world.Run("list").ExpectNotImplemented("list")
+	// Not refused, and no phantom application either. The refusal channel
+	// alone cannot tell "the file was not read" from "the file was read and
+	// its key quietly added": a reader that took ".mackup/notes.txt" as a
+	// definition would have to parse it to refuse it, but one that took
+	// ".mackup/upper.CFG" as key "upper.CFG" -- or the directory
+	// ".mackup/nested" as key "nested" -- adds a key without ever opening a
+	// file. The listing is what closes that.
+	keys := listedKeys(t, world.Run("list"))
+	for _, phantom := range []string{"notes.txt", "notes", "nested", "upper", "upper.CFG", ".hidden", "hidden"} {
+		if keys[phantom] {
+			t.Errorf("list printed %q, which is not a definition file directly in a definition directory", phantom)
+		}
+	}
 }
 
 func TestAMissingDefinitionDirectoryIsSkipped(t *testing.T) {
@@ -315,7 +332,16 @@ func TestAMissingDefinitionDirectoryIsSkipped(t *testing.T) {
 	world := NewWorld(t)
 	world.UseResolvableStorage()
 
-	world.Run("list").ExpectNotImplemented("list")
+	// A skipped directory is a skipped directory, not an empty database: the
+	// built-in set is still assembled and listed. A program that treated an
+	// unreadable listing as fatal would fail the run; one that treated it as
+	// "the database is what this directory holds" would print nothing at all,
+	// and only the count catches that.
+	if keys := listedKeys(t, world.Run("list")); len(keys) == 0 {
+		t.Error("list printed no applications on a machine with no user definition directories")
+	} else if !keys["vim"] {
+		t.Error("list did not print the built-in vim definition")
+	}
 }
 
 func TestTheXDGAppsDirectoryFollowsXDGConfigHome(t *testing.T) {
@@ -337,5 +363,10 @@ func TestTheXDGAppsDirectoryFollowsXDGConfigHome(t *testing.T) {
 	abandoned.UseResolvableStorage()
 	abandoned.Setenv("XDG_CONFIG_HOME", abandoned.Path("xdg"))
 	abandoned.WriteFile(".config/mackup/applications/myapp.cfg", poisonedDefinition, 0o600)
-	abandoned.Run("list").ExpectNotImplemented("list")
+	// Neither refused nor listed: the directory under the default base was not
+	// read at all once the variable moved it. "Not refused" alone would also
+	// hold for a program that read the file and ignored its absolute path.
+	if listedKeys(t, abandoned.Run("list"))["myapp"] {
+		t.Error("list printed myapp, so ~/.config/mackup/applications was read even though $XDG_CONFIG_HOME points elsewhere")
+	}
 }
