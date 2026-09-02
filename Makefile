@@ -6,6 +6,27 @@
 BINARY  := bin/mackup
 PKG     := ./cmd/mackup
 
+# The Go sources the formatting targets act on: the whole module minus what the
+# toolchain itself excludes. Written once and shared, because the two targets
+# that use it must agree -- `make fmt` REWRITES what this matches, and a check
+# target testing a different set than fmt rewrites is worse than either.
+#
+# Completed with -print to list them or -exec to act on them, never by
+# expanding a captured list. `gofmt -l $$files` word-split and globbed its own
+# argument: a path component holding a space became two arguments that do not
+# exist, and one holding a glob metacharacter was expanded against the working
+# directory -- the same hazard the build target quotes "$(BINARY)" for and that
+# TestTheReaperFindsDirectoriesUnderAPathHoldingAGlobMetacharacter pins
+# elsewhere on this branch. (The repository's OWN path is not the exposure:
+# find is given ".", so what it prints is relative. A file or directory INSIDE
+# the repository is.)
+#
+# -exec with + also declines to run gofmt at all when nothing matches, which
+# matters: gofmt with no file arguments reads stdin and would hang the gate
+# rather than fail it. The emptiness guard is kept anyway and made explicit,
+# since silently checking nothing is the failure it exists to prevent.
+GO_SOURCES := find . \( -name '.?*' -o -name '_*' -o -name vendor -o -name testdata -o -path ./bin \) -prune -o -name '*.go'
+
 # Leave VERSION empty for a development build: the program then reports the
 # fallback token appspec/00-overview.md specifies for an uninstalled tree.
 # Release builds stamp their own version, e.g. `make build VERSION=0.1.0`.
@@ -106,18 +127,25 @@ conformance:
 # fixed choice. Vetting, not building: this only has to answer "does the
 # untagged half of the package still compile without the unix half", and it
 # does that without a toolchain for that platform.
+#
+# Scoped to that package and not ./..., which is the difference between the
+# invariant and a trap. This is a dotfile manager: appspec/01's permission
+# rules and appspec/05's link engine bring syscall and x/sys/unix into
+# internal/ soon enough, and the first such file would fail this gate on every
+# developer machine for a platform the project does not target. The conformance
+# package is where a build tag is load-bearing, so it is the only place the
+# question is worth asking.
 vet:
 	go vet -tags conformance ./...
-	GOOS=windows go vet -tags conformance ./...
+	GOOS=windows go vet -tags conformance ./test/conformance/
 
 # Same file list as the check target's gofmt step, and for the same reason --
 # see the comment there. It is spelled out twice rather than shared through a
 # variable so that each target keeps its own guard on find's exit status; the
 # thing to avoid is one of them drifting, so change both.
 fmt:
-	@files="$$(find . \( -name '.?*' -o -name '_*' -o -name vendor -o -name testdata -o -path ./bin \) -prune -o -name '*.go' -print)" || { echo "make: find failed" >&2; exit 1; }; \
-		test -n "$$files" || { echo "make: found no Go files to format" >&2; exit 1; }; \
-		gofmt -l -w $$files
+	@$(GO_SOURCES) -print | grep -q . || { echo "make: found no Go files to format" >&2; exit 1; }; \
+		$(GO_SOURCES) -exec gofmt -l -w {} +
 
 # build is deliberately NOT a prerequisite here, and the reasoning it replaces
 # is recorded because it was wrong twice over.
@@ -194,9 +222,8 @@ fmt:
 # reads STDIN, so a find that matched nothing would hang the gate rather than
 # fail it. Verified.
 check: vet test
-	@files="$$(find . \( -name '.?*' -o -name '_*' -o -name vendor -o -name testdata -o -path ./bin \) -prune -o -name '*.go' -print)" || { echo "make: find failed" >&2; exit 1; }; \
-		test -n "$$files" || { echo "make: found no Go files to format-check" >&2; exit 1; }; \
-		unformatted="$$(gofmt -l $$files)" || { echo "make: gofmt failed" >&2; exit 1; }; \
+	@$(GO_SOURCES) -print | grep -q . || { echo "make: found no Go files to format-check" >&2; exit 1; }; \
+		unformatted="$$($(GO_SOURCES) -exec gofmt -l {} +)" || { echo "make: gofmt failed" >&2; exit 1; }; \
 		test -z "$$unformatted" || { echo "gofmt needed:"; printf '%s\n' "$$unformatted"; exit 1; }
 
 clean:

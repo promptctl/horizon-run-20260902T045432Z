@@ -94,6 +94,20 @@ def cut(f, start, end):
     calling it deleted is what left the FIFO branch standing while its entry
     reported a kill, so the shape that removes the arm itself has its own kind
     rather than a hand-written repl each time.
+
+    Both markers are matched at the START OF A LINE, which is what makes the
+    end anchor safe rather than lucky. A plain substring search for the end
+    "\t\tdefault:" also matches inside a NESTED "\t\t\tdefault:", so an arm
+    that later grew an inner switch would have been cut short -- leaving a
+    mutation that still compiles but is not the one the entry names, and a kill
+    credited to the wrong defect. That is the same failure the tail guard was
+    added for one commit earlier, and it was left in place here.
+
+    Line anchoring closes it because gofmt guarantees the indentation: a nested
+    construct carries strictly more tabs, so a marker written at one
+    indentation cannot match at a deeper one. "\t\tdefault:" already occurs
+    twice in harness_test.go, so requiring a globally unique end -- the rule
+    repl uses -- would reject the one entry that is correct today.
     """
     return ("cut", f, start, end)
 
@@ -327,14 +341,15 @@ def apply(edits):
                 return None, "anchor %r occurs %d times in %s" % (a[:60], n, f)
             src = src.replace(a, b)
         elif kind == "cut":
-            n = src.count(a)
+            anchored, ending = "\n" + a, "\n" + b
+            n = src.count(anchored)
             if n != 1:
-                return None, "cut start %r occurs %d times in %s" % (a[:60], n, f)
-            i = src.find(a)
-            j = src.find(b, i)
+                return None, "cut start %r occurs %d times at the start of a line in %s" % (a[:60], n, f)
+            i = src.find(anchored) + 1
+            j = src.find(ending, i)
             if j < 0:
-                return None, "cut end %r not found after the start in %s" % (b[:60], f)
-            src = src[:i] + src[j:]
+                return None, "cut end %r not found at the start of a line after the start in %s" % (b[:60], f)
+            src = src[:i] + src[j + 1:]
         else:
             i = src.find(a)
             if i < 0:

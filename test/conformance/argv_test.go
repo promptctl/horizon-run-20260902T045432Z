@@ -869,7 +869,23 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 				}
 				return nil
 			}
-			if !strings.HasSuffix(path, ".go") {
+			// The same two prefixes as the directory prune above, applied to
+			// files, because the toolchain applies them to files: `go build`,
+			// `go vet` and `go list` all ignore internal/_scratch.go, and the
+			// gate's own gofmt list already skipped it. This walk did not, and
+			// a parse failure there is returned to WalkDir and becomes the
+			// Fatalf below -- so an unparseable scratch file, or the dangling
+			// internal/.#lock.go symlink Emacs writes beside any file being
+			// edited, failed the whole gate with a message about doc comments.
+			// Both observed.
+			//
+			// A parse failure on a file that IS part of the build stays fatal.
+			// That file breaks `go vet`, which runs first in the check target,
+			// and `gofmt -l`, which lists it; it is not this guard's to
+			// swallow, and swallowing it would mean a file the convention
+			// applies to going unchecked.
+			if !strings.HasSuffix(path, ".go") ||
+				strings.HasPrefix(entry.Name(), ".") || strings.HasPrefix(entry.Name(), "_") {
 				return nil
 			}
 			file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments)

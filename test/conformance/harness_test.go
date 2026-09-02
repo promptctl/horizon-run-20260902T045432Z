@@ -287,6 +287,22 @@ func readImplementationSources() {
 			if entry.Name() == ".git" || path == filepath.Join(root, "bin") {
 				return fs.SkipDir
 			}
+			// The two prefixes the toolchain excludes outright, which .git is
+			// one instance of. A `git worktree add .worktrees/x` puts another
+			// branch's entire checkout under the module root, and .direnv,
+			// .gopath and .tools hold third-party trees; opening those
+			// file-by-file folds them into this suite's test cache key, so an
+			// unrelated worktree or tool cache moving invalidates a
+			// conformance result that does not depend on it, and the walk's
+			// cost grows with trees that are not the program.
+			//
+			// This is not the narrowing the paragraph above refuses. That
+			// refusal is about guessing where the program lives; these are
+			// directories the compiler has already ruled out of the module, so
+			// nothing the cache key is about can be inside one.
+			if path != root && (strings.HasPrefix(entry.Name(), ".") || strings.HasPrefix(entry.Name(), "_")) {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		// Never opened, for the same reason Snapshot does not open them: a
