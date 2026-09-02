@@ -238,12 +238,13 @@ const (
 // Root finds whichever of the client's two database paths exists and reads the
 // local sync root out of it.
 //
-// appspec/04 prefers the user_default database "if it exists" and otherwise
-// takes the one beside it, so the choice is by existence and not by which
-// query succeeds: a present-but-unreadable preferred database is a failure,
-// not a reason to fall back. Every failure -- neither file present, the file
-// unreadable, the row absent, the value empty -- is the one message appspec/04
-// gives this engine.
+// appspec/04 says "whichever DB file exists", so a candidate is chosen by
+// being a FILE, not by the path being occupied: a directory at the preferred
+// path is not a database and the one beside it is taken. What existence does
+// not mean is "the query works" -- a preferred file that cannot be parsed has
+// been chosen already, and fails without falling back. Every failure --
+// neither file present, the file unreadable, the row absent, the value empty
+// -- is the one message appspec/04 gives this engine.
 func (g googleDrive) Root() (string, error) {
 	support := filepath.Join(g.home, driveSupportDir)
 	var db string

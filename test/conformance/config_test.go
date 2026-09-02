@@ -406,6 +406,66 @@ func TestEveryShapeOfBrokenHostDatabaseIsTheSameDropboxFailure(t *testing.T) {
 	}
 }
 
+// driveSupport is the client directory appspec/04 puts both google_drive
+// databases in, home-relative.
+const driveSupport = "Library/Application Support/Google/Drive"
+
+// installDriveFixture copies one of internal/storage's committed SQLite
+// databases into a world.
+//
+// The fixture is borrowed rather than written here because this program cannot
+// produce a SQLite file, and a hand-rolled one would be this suite agreeing
+// with the reader it is supposed to be checking from outside.
+func installDriveFixture(w *World, fixture, relative string) {
+	w.t.Helper()
+	root, err := moduleRoot()
+	if err != nil {
+		w.t.Fatalf("locating the module root: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "internal/storage/testdata", fixture))
+	if err != nil {
+		w.t.Fatalf("reading the fixture %s: %v", fixture, err)
+	}
+	w.WriteFile(relative, string(content), 0o600)
+}
+
+func TestAGoogleDriveDatabaseThatCannotBeReadIsNotAReasonToTakeTheOtherOne(t *testing.T) {
+	// appspec/04 chooses between the two paths by "whichever DB file exists",
+	// which is existence and not "whichever query succeeds". The distinction
+	// is only visible when the fallback would have worked, so both worlds here
+	// carry a VALID database at the fallback path and differ only in what sits
+	// at the preferred one.
+	t.Run("a directory at the preferred path is not a DB file", func(t *testing.T) {
+		// So no database exists there, the fallback is the one that exists,
+		// and the run resolves and reaches its dispatch arm.
+		world := NewWorld(t)
+		writeConfig(world, "[storage]\nengine = google_drive\n")
+		if err := os.MkdirAll(world.Path(driveSupport+"/user_default/sync_config.db"), 0o700); err != nil {
+			t.Fatalf("creating the directory fixture: %v", err)
+		}
+		installDriveFixture(world, "other_root.db", driveSupport+"/sync_config.db")
+
+		world.Run("list").ExpectNotImplemented("list")
+	})
+	t.Run("an unreadable file at the preferred path is a DB file", func(t *testing.T) {
+		// So it is the one that exists, and failing to read it is the end of
+		// the resolution. Falling through would SUCCEED here, which is what
+		// makes this observable at all: the two behaviours differ by whether
+		// the command runs.
+		world := NewWorld(t)
+		writeConfig(world, "[storage]\nengine = google_drive\n")
+		world.WriteFile(driveSupport+"/user_default/sync_config.db", "this is not a database", 0o600)
+		installDriveFixture(world, "other_root.db", driveSupport+"/sync_config.db")
+		before := world.Snapshot()
+
+		world.Run("list").
+			ExpectExit(1).
+			ExpectStderr("Unable to find your Google Drive install =(").
+			ExpectSilentStdout()
+		world.ExpectUnchanged(before)
+	})
+}
+
 func TestTheICloudEngineResolvesWhenItsFixedDirectoryExists(t *testing.T) {
 	// appspec/04: iCloud Drive is at a fixed location and "the existence of
 	// that directory *is* the resolution".

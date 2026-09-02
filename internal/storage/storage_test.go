@@ -254,6 +254,55 @@ func TestGoogleDriveFallsBackToTheDatabaseBesideIt(t *testing.T) {
 	}
 }
 
+func TestOnlyAFileAtThePreferredPathBlocksTheFallback(t *testing.T) {
+	// The two halves of "whichever DB file exists", separated by the thing
+	// that separates them: a VALID database at the fallback path. Without it
+	// both halves fail identically and neither is pinned -- which is what the
+	// directory case in the failure table used to do, and why it asserted a
+	// guarantee it could not see.
+	t.Run("a directory at the preferred path is not a database", func(t *testing.T) {
+		// So the fallback is taken. appspec/04 says "DB file", and a
+		// directory is not one; refusing here would make a machine with a
+		// valid database at the documented fallback location unresolvable
+		// because of an unrelated directory beside it.
+		home := newHome(t)
+		if err := os.MkdirAll(filepath.Join(home, driveSupportDir, drivePreferred), 0o700); err != nil {
+			t.Fatalf("creating the fixture: %v", err)
+		}
+		installDriveDB(t, home, driveOther, filepath.Join(driveSupportDir, driveFallback))
+
+		root, err := Resolve(GoogleDrive, home, "")
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if want := "/Users/someone/Fallback Drive"; root != want {
+			t.Errorf("Resolve = %q, want the fallback database's %q", root, want)
+		}
+	})
+	t.Run("an unreadable file at the preferred path is a database", func(t *testing.T) {
+		// So it is chosen, and failing to parse it is the end of the
+		// resolution rather than a reason to try the other one. This is the
+		// no-fallback rule the engine's doc comment states, and until this
+		// case existed nothing checked it: the fallback below is deliberately
+		// valid, so falling through would SUCCEED and be visible.
+		home := newHome(t)
+		path := filepath.Join(home, driveSupportDir, drivePreferred)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("creating the support directory: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("this is not a database"), 0o600); err != nil {
+			t.Fatalf("writing the fixture: %v", err)
+		}
+		installDriveDB(t, home, driveOther, filepath.Join(driveSupportDir, driveFallback))
+
+		root, err := Resolve(GoogleDrive, home, "")
+		if err == nil {
+			t.Fatalf("Resolve = %q, want a failure: the preferred database was chosen and could not be read", root)
+		}
+		expectProviderFailure(t, "an unreadable preferred database", err, "Google Drive install")
+	})
+}
+
 func TestEveryGoogleDriveFailureIsTheOneGuardedProviderMessage(t *testing.T) {
 	// appspec/04 again gives one message to several causes: "If neither DB
 	// file exists, or the query yields no usable value, or the DB cannot be
@@ -289,10 +338,11 @@ func TestEveryGoogleDriveFailureIsTheOneGuardedProviderMessage(t *testing.T) {
 		expectProviderFailure(t, "the database cannot be read", err, "Google Drive install")
 	})
 	t.Run("the preferred database is a directory", func(t *testing.T) {
-		// Existence alone does not make a candidate readable, and a
-		// non-regular file at the preferred path must not be chosen -- but it
-		// must not silently fall through to the other one either, because
-		// nothing here is installed at the fallback path.
+		// A non-regular file at the preferred path is not a database, so
+		// neither candidate exists and the engine fails. The companion case
+		// below installs a real fallback, which is what tells this apart from
+		// falling through -- an earlier version of this case left the fallback
+		// empty and so held for either behaviour.
 		home := newHome(t)
 		if err := os.MkdirAll(filepath.Join(home, driveSupportDir, drivePreferred), 0o700); err != nil {
 			t.Fatalf("creating the fixture: %v", err)

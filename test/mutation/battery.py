@@ -618,6 +618,35 @@ MUTATIONS = [
    '\treturn &Error{Regime: Unguarded, Message: "Error: " + fmt.Sprintf(format, args...)}')],
    'want a shape distinct from the guarded rows'),
 
+ # Raised in review on PR #5, and the entry exists because the reviewer was
+ # RIGHT about the hole while wrong about the behaviour. appspec/04 chooses a
+ # candidate by "whichever DB file exists", not by which query succeeds, so a
+ # preferred file that cannot be parsed ends the resolution. The old test for
+ # that guarantee left the fallback path EMPTY, which made both behaviours fail
+ # identically -- a vacuous assertion the whole battery exists to find, and one
+ # it could not find because no entry injected the fall-through. It does now.
+ ("an unreadable preferred database falls through to the fallback", [repl(ST,
+   '\tif db == "" {\n'
+   '\t\treturn "", unlocatable("Google Drive install")\n'
+   '\t}\n'
+   '\troot, err := sqlite.Lookup(db, driveTable, driveKeyColumn, driveKey, driveValueColumn)\n'
+   '\tif err != nil || !usableText(root) {\n'
+   '\t\treturn "", unlocatable("Google Drive install")\n'
+   '\t}\n'
+   '\treturn root, nil',
+   '\t_ = db\n'
+   '\tfor _, candidate := range []string{\n'
+   '\t\tfilepath.Join(support, drivePreferred),\n'
+   '\t\tfilepath.Join(support, driveFallback),\n'
+   '\t} {\n'
+   '\t\troot, err := sqlite.Lookup(candidate, driveTable, driveKeyColumn, driveKey, driveValueColumn)\n'
+   '\t\tif err == nil && usableText(root) {\n'
+   '\t\t\treturn root, nil\n'
+   '\t\t}\n'
+   '\t}\n'
+   '\treturn "", unlocatable("Google Drive install")')],
+   'want a failure: the preferred database was chosen and could not be read'),
+
  # --- appspec/05 the built-in application catalog (macklebox-resolvers-5iw.1) -
  #
  # No entries, deliberately, and this banner is here so the absence is a
