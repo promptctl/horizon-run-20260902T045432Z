@@ -50,7 +50,16 @@ FILES = ["test/conformance/harness_test.go", "test/conformance/argv_test.go",
          "internal/config/config.go", "internal/storage/storage.go",
          "internal/fault/fault.go",
          "internal/appdb/appdb.go", "internal/ini/ini.go",
-         "internal/homepath/homepath.go"]
+         "internal/homepath/homepath.go",
+         "internal/app/enumerate.go", "internal/app/stages.go",
+         # The catalog is DATA, and these two are the first non-.go entries in
+         # this list. A mutation to a definition file is only worth writing now
+         # that `list` and `show` print what it holds -- see the appspec/05
+         # catalog section below, which used to be a deferral banner and is now
+         # two entries. gofmt is run over every touched file before the gate;
+         # on a .cfg it fails to parse and writes nothing, which is the
+         # behavior these rely on rather than tolerate.
+         "internal/catalog/catalog.go", "internal/catalog/applications/mackup.cfg"]
 
 H = "test/conformance/harness_test.go"
 C = "internal/ui/color.go"
@@ -74,6 +83,10 @@ FA = "internal/fault/fault.go"
 AD = "internal/appdb/appdb.go"
 IN = "internal/ini/ini.go"
 HP = "internal/homepath/homepath.go"
+EN = "internal/app/enumerate.go"
+SG = "internal/app/stages.go"
+CT = "internal/catalog/catalog.go"
+MK = "internal/catalog/applications/mackup.cfg"
 
 # SURVIVES marks an entry that must NOT break the gate. Most entries are
 # defects the suite has to catch; these are the opposite -- correct code that a
@@ -544,11 +557,26 @@ MUTATIONS = [
  # is what carries the conformance half of the claim.
  #
  # One property is deliberately NOT here: Config.Scope's "the denylist wins
- # over the allowlist". No non-test caller invokes Scope yet -- `list` is wired
- # to the catalog by macklebox-resolvers-5iw.4 -- so flipping it is killed by
- # internal/config alone and reports RIG-BLIND, accurately and uselessly. This
- # is the same call as the catalog deferral below, for the same reason. Add it
- # with .4, alongside the two catalog entries that banner names.
+ # over the allowlist". It was deferred to macklebox-resolvers-5iw.4 on the
+ # expectation that wiring `list` to the catalog would make Scope observable.
+ # THAT EXPECTATION WAS WRONG, and .4 is where it was found out, so the
+ # deferral is corrected here rather than satisfied.
+ #
+ # `list` does not call Scope and must not. appspec/03 says of
+ # `[applications_to_sync]`, in as many words, that "this section does not
+ # affect `list` output", and appspec/05 defines what `list` prints as "the set
+ # of all keys assembled by the discovery rules" -- so narrowing it would be
+ # the defect, not the fix. Two cases now pin that reading: the unit
+ # TestListIsNotNarrowedByTheConfigApplicationLists and the conformance
+ # TestListAndShowAreNarrowedByNothingInTheConfig. The mutation that ADDS the
+ # Scope call to `list` is written in the .4 section below, which is the
+ # observable half of this property that .4 could honestly supply.
+ #
+ # Scope therefore still has no non-test caller: it belongs to the sync
+ # fan-out, macklebox-copy-sync-dpz.3, which is the first command to act on
+ # "all applications". Flipping the denylist rule today is still killed by
+ # internal/config alone and still reports RIG-BLIND, accurately and
+ # uselessly. Add it with that ticket.
 
  # appspec/03's environment table, and the one rule in this tree that TWO
  # stages read from a single implementation: config discovery and database
@@ -592,6 +620,14 @@ MUTATIONS = [
  # "Unable to find the storage folder: <path>" belongs to the environment gate
  # -- so a stat here does not break a postcondition, it moves a message to the
  # wrong stage. Nothing in the tree but the two tests this kills says so.
+ #
+ # It went RIG-BLIND for one commit, and the reason is worth keeping: once the
+ # gate existed, a stat in the engine produced the gate's OWN line, so the
+ # conformance case asserting that line could not tell the two stages apart.
+ # Two stages are distinguishable only where they disagree, and between these
+ # two stands database assembly --
+ # TestTheStorageRootIsCheckedAfterTheDatabaseIsAssembled is what restored the
+ # rig's sight, and it is still the only case that has it.
  ("the file_system engine gains an existence check", [repl(ST,
    '\tif filepath.IsAbs(f.path) {\n'
    '\t\treturn f.path, nil\n'
@@ -686,14 +722,13 @@ MUTATIONS = [
  # tightly than a shared sentence would, and does not break when the catalog
  # grows by one application.
  #
- # Two properties are deliberately NOT here, both for the reason the Scope and
- # catalog deferrals give, and both belonging to macklebox-resolvers-5iw.4:
+ # Two properties were deferred from here to macklebox-resolvers-5iw.4 --
  # definition keys being lowercased, and a definition file read under
- # ini.LowercaseKeys so its paths lose their case. Neither reaches the boundary
- # until `list` and `show` print keys and paths -- today both are killed by
- # internal/appdb alone and report RIG-BLIND, accurately and uselessly. The
- # second is the newer risk of the two: the case-policy pair of appspec/03 and
- # appspec/05 now hangs on one argument at two call sites.
+ # ini.LowercaseKeys so its paths lose their case -- because neither reaches
+ # the boundary until `list` and `show` print keys and paths. Both are WRITTEN
+ # NOW, at the end of this section, and neither reports RIG-BLIND any more.
+ # They are the case-policy pair of appspec/03 and appspec/05, which after the
+ # internal/ini extraction hangs on one argument at two call sites.
 
  # appspec/05's absolute-path rejection, which it calls "load-bearing for the
  # sync engine's safety" rather than input hygiene: appspec/06 never re-checks
@@ -803,31 +838,156 @@ MUTATIONS = [
    '\treturn line')],
    "with the comment stripped and the value trimmed"),
 
+ # The case-policy pair, deferred from macklebox-resolvers-5iw.3 and written
+ # here now that `list` prints keys and `show` prints paths. appspec/03
+ # lowercases application-list keys; appspec/05 does NOT lowercase either a
+ # definition's filename or the paths inside it, and states the asymmetry
+ # outright: "application-list keys are case-normalized; definition file paths
+ # are case-exact."
+ #
+ # The half that key-lowercasing looks free on is the shipped catalog: all 614
+ # keys are already lowercase, so folding them changes nothing about the
+ # program's own data and only breaks a user's Mixed.cfg.
+ ("definition keys lowercased", [repl(AD,
+   '\t\t\tkey := strings.TrimSuffix(name, extension)',
+   '\t\t\tkey := strings.ToLower(strings.TrimSuffix(name, extension))')],
+   "the key was lowercased; appspec/05 makes the basename the key"),
+
+ # The other half, and the newer risk: one argument at one of two call sites.
+ # internal/ini takes the case policy as a parameter precisely so the two file
+ # kinds can differ, which means the difference between them is a single
+ # identifier -- and a reader tidying the two call sites into agreement makes
+ # exactly this mutation. Nothing about the shipped catalog notices: a path
+ # like `.vimrc` is unchanged by folding, and it takes a definition holding
+ # `.Xresources` or a `Library/Preferences` path to tell the readings apart.
+ ("a definition is read with the config case policy", [repl(AD,
+   '\tparsed := ini.Parse(string(content), ini.ExactKeys)',
+   '\tparsed := ini.Parse(string(content), ini.LowercaseKeys)')],
+   "want [.Xresources Library/Preferences/My.plist] with their case preserved"),
+
  # --- appspec/05 the built-in application catalog (macklebox-resolvers-5iw.1) -
  #
- # No entries, deliberately, and this banner is here so the absence is a
- # decision rather than an oversight.
+ # This was a deferral banner recording an absence: internal/catalog's 614
+ # embedded definitions were pinned against appspec/appendix-application-names.md
+ # by unit tests alone, and nothing in the catalog reached the program's
+ # boundary, so a mutation to a .cfg was killed by internal/catalog and
+ # reported RIG-BLIND -- accurately, and uselessly. macklebox-resolvers-5iw.4
+ # wired `list` and `show` to it, which is what the deferral was waiting for,
+ # so the two entries that banner named are written below and neither reports
+ # RIG-BLIND.
  #
- # macklebox-resolvers-5iw.1 ships internal/catalog: 614 definition files
- # embedded in the binary, and unit tests that pin them against
- # appspec/appendix-application-names.md -- the key set, the file naming, the
- # absolute-path rejection appspec/05 calls load-bearing, and the mackup
- # self-definition whole-Mackup mode needs. Every one of those is real and
- # every one of them was checked by hand, in a copied tree, by making the
- # mutation and reading the diagnostic.
+ # They are this file's first mutations to DATA rather than to code, and the
+ # distinction is worth naming: a definition file is not a place a defect gets
+ # "introduced" by a careless edit so much as a place one arrives by a
+ # regeneration, a merge, or a script that rewrites the directory. That is
+ # exactly the shape both entries take.
+
+ # appspec/05 gives Mackup a definition of its own, and whole-Mackup mode
+ # (appspec/06) syncs the user's config through it: if `.mackup.cfg` is not in
+ # the file set, `mackup backup` silently stops carrying the user's own
+ # settings. The `show mackup` claim is the observable half, and it is the only
+ # thing standing between that path and a one-line data edit.
+ ("the mackup definition loses its own config file",
+  [repl(MK, "\n.mackup\n.mackup.cfg\n", "\n.mackup\n")],
+  "the mackup self-definition does not list .mackup.cfg"),
+
+ # A definition file going missing from the shipped set -- what a regenerating
+ # script that mishandles a glob does, and what a partial merge does. The
+ # mutation narrows the embed pattern rather than deleting a file, because an
+ # embed pattern is the one edit that removes many definitions at once while
+ # leaving every file in the tree for `git status` to show as clean.
  #
- # None of it belongs here YET, for the reason stated at the top of the
- # appspec/07 banner above: the bar for an internal/ entry is that the
- # CONFORMANCE suite can kill it, and nothing in the catalog reaches the
- # program's boundary until `list` and `show` are wired to it. Until then a
- # mutation to a .cfg file is killed by the unit tests alone and reports
- # RIG-BLIND -- accurately, and uselessly. This is the same call the
- # reset-safety deferral above records, for the same reason.
+ # `applications/[a-y]*` drops the z* keys and the digit-prefixed ones. The
+ # expect deliberately does NOT name the count: "606 definitions ship" moves
+ # every time the catalog grows, and an expect that moves with the data is an
+ # expect that will be edited to whatever the next run prints.
+ ("definition files go missing from the shipped set",
+  [repl(CT, "//go:embed applications", "//go:embed applications/[a-y]*")],
+  "and no definition ships for it"),
+
+ # --- appspec/01 section 4 and appspec/05 Enumeration (macklebox-resolvers-5iw.4)
  #
- # Add the entries with macklebox-resolvers-5iw.4, which is what makes the
- # catalog observable. The obvious two: mackup.cfg losing ".mackup.cfg" (the
- # `show mackup` claim) and a definition file deleted or renamed (the 614-key
- # `list` claim). Both need internal/catalog paths added to FILES.
+ # `list` and `show` are the first commands that reach the boundary with
+ # something to SAY, so they are the first entries whose kill is a claim about
+ # printed output rather than about a refusal. Each was applied in a copied
+ # tree and put to `make conformance` separately before it was written down.
+ #
+ # ONE PROPERTY OF THIS TICKET HAS NO ENTRY, deliberately: the superuser guard
+ # of appspec/07. The conformance suite runs as an ordinary user -- that is
+ # what makes it runnable in CI at all -- so it cannot take the refusing arm,
+ # and deleting the guard is killed by internal/app alone and reports
+ # RIG-BLIND. appspec/07 marks that path UNVERIFIED for the same reason, and
+ # internal/app drives both arms through the effectiveUID seam instead. This is
+ # the same call the catalog banner above used to record; it is written down
+ # here so the absence stays a decision.
+
+ # appspec/04 clause 2: the file_system engine "returns the path without any
+ # existence check", and appspec/01 section 4 level 1 is where that deferred
+ # check finally fires. Deleting the stat is the shape a reimplementation
+ # reaches for when the gate looks like it is re-checking a path the config
+ # already resolved -- it is not; nothing before it looks at the filesystem at
+ # all, which is precisely what clause 2 arranges.
+ ("the storage-root existence check is deleted", [repl(SG,
+   '\tif info, err := os.Stat(root); err != nil || !info.IsDir() {\n'
+   '\t\treturn fault.Guardedf("Unable to find the storage folder: %s", root)\n'
+   '\t}\n'
+   '\treturn nil',
+   '\t_ = root\n'
+   '\treturn nil')],
+   'want exactly "Error: Unable to find the storage folder: '),
+
+ # The appspec/03 trap, and the only entry in this file whose mutation ADDS
+ # code that looks MORE correct than what is there. A reader who knows the
+ # config has application lists and sees `list` print all 614 keys concludes
+ # the narrowing was forgotten, and wiring Config.Scope in is a four-line
+ # change that reads like a fix.
+ #
+ # It is the defect. appspec/03 says of `[applications_to_sync]` that "this
+ # section does not affect `list` output", and appspec/05 defines what `list`
+ # prints as "the set of all keys assembled by the discovery rules" -- which is
+ # what makes `list` an audit surface at all: a user narrowing their sync scope
+ # still needs to see the catalog the narrowing is drawn from. Scope selects
+ # what a SYNC command acts on, and has no caller until macklebox-copy-sync-dpz.3.
+ #
+ # Same shape as "the file_system engine gains an existence check" above: a
+ # mutation that a green suite would welcome, kept honest by a case that says
+ # the absence is the contract.
+ ("list is narrowed by the configured scope", [
+   repl(A, "\treturn dispatch(inv, streams, apps)", "\treturn dispatch(inv, streams, cfg, apps)"),
+   repl(D, '\t"github.com/promptctl/macklebox/internal/cli"\n',
+           '\t"github.com/promptctl/macklebox/internal/cli"\n'
+           '\t"github.com/promptctl/macklebox/internal/config"\n'),
+   repl(D, "func dispatch(inv cli.Invocation, streams *ui.IO, apps *appdb.Database) int {",
+           "func dispatch(inv cli.Invocation, streams *ui.IO, cfg *config.Config, apps *appdb.Database) int {"),
+   repl(D, "\t\treturn list(streams, apps)", "\t\treturn list(streams, cfg, apps)"),
+   repl(EN, '\t"github.com/promptctl/macklebox/internal/appdb"\n',
+            '\t"github.com/promptctl/macklebox/internal/appdb"\n'
+            '\t"github.com/promptctl/macklebox/internal/config"\n'),
+   repl(EN, "func list(streams *ui.IO, apps *appdb.Database) int {\n\tkeys := apps.Keys()",
+            "func list(streams *ui.IO, cfg *config.Config, apps *appdb.Database) int {\n\tkeys := cfg.Scope(apps.Keys())"),
+ ],
+   "list under an allowlist and a denylist printed"),
+
+ # appspec/05's observed effect for a dropped definition is ONE claim about TWO
+ # lines of output: the key "appears in list" AND the trailer increments. A
+ # count derived some other way than from what was printed satisfies neither
+ # half honestly, and the reference build's own number -- appspec/05 writes
+ # "Reference build: N = 614" -- is the constant a reader reaches for.
+ #
+ # The shipped catalog is exactly 614 applications, so this mutation is
+ # invisible to every fixture that does not add or shadow a definition. It is
+ # the entry that says the trailer counts the keys it just printed.
+ #
+ # The only entry in this section whose `make check` kill comes from the
+ # CONFORMANCE suite rather than a unit package -- every unit fixture runs
+ # against the shipped catalog alone, where 614 is the right answer -- so its
+ # expect is a conformance diagnostic, per the rule the appspec/07 banner
+ # states. It names the owning case rather than the helper's sentence, which
+ # four cases share and which carries the catalog's count in its text.
+ ("the list trailer counts the catalog instead of what it printed",
+  [repl(EN, '"%d applications supported in Mackup v%s", len(keys), version.String()',
+            '"%d applications supported in Mackup v%s", 614, version.String()')],
+  "FAIL: TestADroppedDefinitionAppearsInListAndIncrementsTheCount"),
 ]
 
 

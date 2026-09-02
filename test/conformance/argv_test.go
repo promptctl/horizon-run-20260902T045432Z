@@ -389,36 +389,49 @@ func TestFormsMatchingNoUsageLineAreUsageErrors(t *testing.T) {
 
 func TestEveryInvocationFormIsAcceptedAndReachesItsCommand(t *testing.T) {
 	// Every usage line of appspec/02, with the command each form selects.
-	// None can succeed yet -- the sync operations are later tickets -- so what
-	// is observable is that the form got past the parser and reached that
-	// command's dispatch arm. Asserting the arm, rather than the absence of a
-	// usage error, is what makes this case able to fail: "no usage error" also
-	// holds when the program is broken in some other way, or prints its usage
-	// block under a different first word.
+	// Asserting the arm the form reached, rather than the absence of a usage
+	// error, is what makes this case able to fail: "no usage error" also holds
+	// when the program is broken in some other way, or prints its usage block
+	// under a different first word.
 	//
-	// Each world needs a resolvable config now that loadConfig has landed:
-	// appspec/02 puts the config gate before dispatch for every subcommand, so
-	// without one the run dies at the gate and this case would report that the
-	// parser rejected a form it accepted perfectly.
+	// The two enumeration forms have landed and are asserted by what they DO
+	// -- that is the replacement ExpectNotImplemented's doc promises for each
+	// use "as that command's ticket lands", and it is a stronger claim than
+	// the placeholder made. The five sync forms still report themselves
+	// unimplemented, from dispatch, which is the same positive assertion in
+	// the only shape available to a command whose ticket is still open.
+	//
+	// Each world needs a resolvable config and a storage root: appspec/02 puts
+	// the config gate before dispatch for every subcommand and appspec/01
+	// section 4 puts the environment gate there too, so without them the run
+	// dies at a gate and this case would report that the parser rejected a
+	// form it accepted perfectly. UseResolvableStorage supplies both.
 	for _, test := range []struct {
 		args []string
 		cmd  string
+		// done marks a form whose command is implemented: it must succeed and
+		// print to stdout rather than report itself unimplemented.
+		done bool
 	}{
-		{[]string{"list"}, "list"},
-		{[]string{"show", "vim"}, "show"},
-		{[]string{"backup"}, "backup"},
-		{[]string{"backup", "vim"}, "backup"},
-		{[]string{"restore"}, "restore"},
-		{[]string{"restore", "vim"}, "restore"},
-		{[]string{"link"}, "link"},
-		{[]string{"link", "vim"}, "link"},
-		{[]string{"link", "install"}, "link install"},
-		{[]string{"link", "install", "vim"}, "link install"},
-		{[]string{"link", "uninstall"}, "link uninstall"},
-		{[]string{"link", "uninstall", "vim"}, "link uninstall"},
+		{args: []string{"list"}, cmd: "list", done: true},
+		{args: []string{"show", "vim"}, cmd: "show", done: true},
+		{args: []string{"backup"}, cmd: "backup"},
+		{args: []string{"backup", "vim"}, cmd: "backup"},
+		{args: []string{"restore"}, cmd: "restore"},
+		{args: []string{"restore", "vim"}, cmd: "restore"},
+		{args: []string{"link"}, cmd: "link"},
+		{args: []string{"link", "vim"}, cmd: "link"},
+		{args: []string{"link", "install"}, cmd: "link install"},
+		{args: []string{"link", "install", "vim"}, cmd: "link install"},
+		{args: []string{"link", "uninstall"}, cmd: "link uninstall"},
+		{args: []string{"link", "uninstall", "vim"}, cmd: "link uninstall"},
 	} {
 		world := NewWorld(t)
 		world.UseResolvableStorage()
+		if test.done {
+			world.Run(test.args...).ExpectExit(0).ExpectSilentStderr()
+			continue
+		}
 		world.Run(test.args...).ExpectNotImplemented(test.cmd)
 	}
 }

@@ -3,26 +3,25 @@
 // The config and storage-engine half of the suite: appspec/03-configuration.md
 // and appspec/04-storage-engines.md, observed at the program's boundary.
 //
-// One trick recurs and is worth reading once rather than at each use. Nothing
-// this program can do yet PRINTS the storage root -- list and show are
-// macklebox-resolvers-5iw.4's, and the environment gate that would report a
-// missing root with it is too -- so a case cannot read the resolved root off
-// stdout. What it can read is which config file the program decided to obey,
-// and appspec/02's own error table supplies the channel: an unknown [storage]
-// engine is an unguarded failure whose diagnostic must NAME THE OFFENDING
-// VALUE. So a candidate config carrying `engine = from-xdg` reports its own
-// name when it is the one that was read, and discovery precedence becomes
-// directly observable without inventing any output the specification does not
-// describe.
+// Two channels carry the cases here, and both are worth reading once rather
+// than at each use.
 //
-// What that leaves out, said here rather than glossed: the VALUE of a resolved
-// storage root. That a Dropbox host database decodes to the path it encodes,
-// and that a relative file_system path lands under home, are pinned by
-// internal/storage's own tests today; they become boundary-observable with
-// macklebox-resolvers-5iw.4, whose gate prints "Unable to find the storage
-// folder: <path>". The cases below assert what is observable now -- whether
-// an engine resolved at all, and which one failed -- and that is the whole of
-// the difference.
+// The first is WHICH config file the program decided to obey, and appspec/02's
+// own error table supplies it: an unknown [storage] engine is an unguarded
+// failure whose diagnostic must NAME THE OFFENDING VALUE. So a candidate
+// config carrying `engine = from-xdg` reports its own name when it is the one
+// that was read, and discovery precedence is directly observable without
+// inventing any output the specification does not describe.
+//
+// The second is the VALUE of the resolved storage root, which the environment
+// gate of macklebox-resolvers-5iw.4 made observable: appspec/01 section 4
+// requires the storage-root directory to exist, and appspec/07 gives the
+// failure the line `Error: Unable to find the storage folder: <path>`. A world
+// whose engine resolves to a directory that is not there therefore reports the
+// path the engine computed -- so "the Dropbox host database decodes to the
+// path it encodes" and "a relative file_system path lands under home" are now
+// black-box facts rather than internal/storage's own. The cases below use
+// whichever channel their claim needs; several use both.
 
 package conformance
 
@@ -47,6 +46,21 @@ var gatedCommands = [][]string{
 	{"link", "install"},
 	{"link", "uninstall"},
 }
+
+// storageFolderRefusal opens appspec/07's "Storage-root directory missing
+// (usable-env check)" row: `Error: Unable to find the storage folder: <path>`.
+//
+// It is the line that made the resolved storage root observable at all -- see
+// this file's header -- so several cases below read the path a storage engine
+// computed off the end of it.
+const storageFolderRefusal = "Error: Unable to find the storage folder: "
+
+// driveFallbackRoot is the storage root recorded in internal/storage's
+// other_root.db fixture, which that package's own tests name too. The fixture
+// exists so a case can tell WHICH of the two Google Drive databases was read;
+// the path is absolute, outside any world, and never created, so the
+// environment gate names it back.
+const driveFallbackRoot = "/Users/someone/Fallback Drive"
 
 // writeConfig writes the world's ~/.mackup.cfg.
 func writeConfig(w *World, content string) {
@@ -401,15 +415,28 @@ func TestTheDropboxEngineResolvesFromTheHostDatabase(t *testing.T) {
 	// separated tokens, at least two, the SECOND strict Base64 decoding to the
 	// absolute path of the Dropbox folder.
 	//
-	// What is observable here is that it resolved -- the run reaches its
-	// dispatch arm instead of dying at the config gate. The decoded path
-	// itself is pinned by internal/storage's tests until the environment gate
-	// prints it (macklebox-resolvers-5iw.4); see this file's header.
-	world := NewWorld(t)
-	writeConfig(world, "[storage]\nengine = dropbox\n")
-	world.WriteFile(".dropbox/host.db", "6103\n"+base64.StdEncoding.EncodeToString([]byte(world.Path("Dropbox")))+"\n", 0o600)
+	// Both halves are observable now that the environment gate reports the
+	// root it was handed. The folder the database names is CREATED in the
+	// first world, so the run gets all the way through and lists; it is left
+	// absent in the second, so the gate names the decoded path back. The
+	// second is the half that pins the decoding: a program that resolved some
+	// other directory, or the raw Base64, would still list happily in the
+	// first world and would name the wrong path here.
+	resolved := NewWorld(t)
+	writeConfig(resolved, "[storage]\nengine = dropbox\n")
+	resolved.WriteFile(".dropbox/host.db", "6103\n"+base64.StdEncoding.EncodeToString([]byte(resolved.Path("Dropbox")))+"\n", 0o600)
+	if err := os.MkdirAll(resolved.Path("Dropbox"), 0o700); err != nil {
+		t.Fatalf("creating the Dropbox folder: %v", err)
+	}
+	resolved.Run("list").ExpectExit(0).ExpectStdout(listHeader)
 
-	world.Run("list").ExpectNotImplemented("list")
+	named := NewWorld(t)
+	writeConfig(named, "[storage]\nengine = dropbox\n")
+	named.WriteFile(".dropbox/host.db", "6103\n"+base64.StdEncoding.EncodeToString([]byte(named.Path("Elsewhere")))+"\n", 0o600)
+	named.Run("list").
+		ExpectExit(1).
+		ExpectStderrLine(storageFolderRefusal + named.Path("Elsewhere")).
+		ExpectSilentStdout()
 }
 
 func TestEveryShapeOfBrokenHostDatabaseIsTheSameDropboxFailure(t *testing.T) {
@@ -466,7 +493,10 @@ func TestAGoogleDriveDatabaseThatCannotBeReadIsNotAReasonToTakeTheOtherOne(t *te
 	// at the preferred one.
 	t.Run("a directory at the preferred path is not a DB file", func(t *testing.T) {
 		// So no database exists there, the fallback is the one that exists,
-		// and the run resolves and reaches its dispatch arm.
+		// and the run resolves. Which database it resolved FROM is observable
+		// now: the fallback fixture names a root of its own, and the gate
+		// reports the path it was handed. A program that had somehow resolved
+		// the preferred path -- or defaulted -- would name a different one.
 		world := NewWorld(t)
 		writeConfig(world, "[storage]\nengine = google_drive\n")
 		if err := os.MkdirAll(world.Path(driveSupport+"/user_default/sync_config.db"), 0o700); err != nil {
@@ -474,7 +504,10 @@ func TestAGoogleDriveDatabaseThatCannotBeReadIsNotAReasonToTakeTheOtherOne(t *te
 		}
 		installDriveFixture(world, "other_root.db", driveSupport+"/sync_config.db")
 
-		world.Run("list").ExpectNotImplemented("list")
+		world.Run("list").
+			ExpectExit(1).
+			ExpectStderrLine(storageFolderRefusal + driveFallbackRoot).
+			ExpectSilentStdout()
 	})
 	t.Run("an unreadable file at the preferred path is a DB file", func(t *testing.T) {
 		// So it is the one that exists, and failing to read it is the end of
@@ -504,25 +537,75 @@ func TestTheICloudEngineResolvesWhenItsFixedDirectoryExists(t *testing.T) {
 		t.Fatalf("creating the iCloud directory: %v", err)
 	}
 
-	world.Run("list").ExpectNotImplemented("list")
+	// The directory exists, so it satisfies the environment gate as well as
+	// the engine, and the run completes. That is the whole of the engine's
+	// contract observed end to end: existence IS the resolution.
+	world.Run("list").ExpectExit(0).ExpectStdout(listHeader)
 }
 
-func TestTheFileSystemEngineDoesNotCheckThatItsPathExists(t *testing.T) {
+func TestTheEnvironmentGateAndNotTheEngineRefusesAPathThatIsNotThere(t *testing.T) {
 	// appspec/04 clause 2, the non-uniform postcondition, observed from
 	// outside: the user-supplied-path engine returns the path "without any
-	// existence check", and a reimplementer is told by name not to add one.
+	// existence check", and a reimplementer is told by name not to add one,
+	// because the uniform existence guarantee belongs to the environment gate
+	// of appspec/01 section 4.
 	//
-	// The run gets past the config gate with a path that is not there, which
-	// is exactly what the deferral means. Once macklebox-resolvers-5iw.4 lands
-	// this same world will fail at the environment gate instead -- with
-	// "Unable to find the storage folder: <path>", a different message on a
-	// different row of appspec/07's table -- and this case should be rewritten
-	// to assert that, not deleted: the point is WHICH stage refuses, and there
-	// will finally be two of them to tell apart.
+	// The claim is WHICH STAGE refuses, and there are finally two of them to
+	// tell apart. This case was written when there was one -- it asserted that
+	// the run got PAST the config gate, which was as far as the deferral could
+	// be observed then -- and its own note said to rewrite it here rather than
+	// delete it, because the guarantee it defends is not "a nonexistent path
+	// is accepted".
+	//
+	// The whole line is asserted rather than the failure, because a program
+	// that moved the check into the engine still exits 1 here. That is as far
+	// as this world goes: an engine raising the gate's own line is invisible
+	// to it, since the two stages agree about every byte of the output. The
+	// case below is what tells them apart, and the two are only honest
+	// together.
 	world := NewWorld(t)
 	writeConfig(world, "[storage]\nengine = file_system\npath = nowhere/at/all\n")
+	before := world.Snapshot()
 
-	world.Run("list").ExpectNotImplemented("list")
+	world.Run("list").
+		ExpectExit(1).
+		ExpectStderrLine(storageFolderRefusal + world.Path("nowhere/at/all")).
+		ExpectSilentStdout()
+	// appspec/04's relative-path rule read off the same line: a file_system
+	// path that is not absolute resolves under HOME, not under the working
+	// directory -- and the command runs with its working directory at the
+	// world's root, so the two are different directories here.
+	world.ExpectUnchanged(before)
+}
+
+func TestTheStorageRootIsCheckedAfterTheDatabaseIsAssembled(t *testing.T) {
+	// The half of "which stage refuses" that has teeth. Two stages are only
+	// distinguishable where they disagree about what to report, and between
+	// these two stands a third: appspec/01 section 4 orders the startup as
+	// config (step 2), application database (step 3), environment gate (step
+	// 4).
+	//
+	// So a world whose storage path is not there AND whose ~/.mackup holds a
+	// definition with an absolute path must report appspec/05's rejection:
+	// assembly runs first and refuses before the gate ever stats anything. An
+	// engine that stats its own path reports the storage folder instead,
+	// because it ran a stage earlier -- and it reports the very line the gate
+	// would have written, which is exactly why the case above cannot see it.
+	world := NewWorld(t)
+	writeConfig(world, "[storage]\nengine = file_system\npath = nowhere/at/all\n")
+	world.WriteFile(".mackup/myapp.cfg", poisonedDefinition, 0o600)
+	before := world.Snapshot()
+
+	text := world.Run("list").ExpectFailureExit().ExpectSilentStdout().StderrText()
+	if !strings.Contains(text, absolutePathRefusal) {
+		t.Errorf("mackup list wrote %q, want %q: the database is assembled before the environment gate runs",
+			text, absolutePathRefusal)
+	}
+	if strings.Contains(text, storageFolderRefusal) {
+		t.Errorf("mackup list wrote %q, and naming the storage folder at all means a stage before assembly checked it",
+			text)
+	}
+	world.ExpectUnchanged(before)
 }
 
 func TestTheFileSystemEngineWithNoPathIsRefused(t *testing.T) {
@@ -598,9 +681,17 @@ func TestAnOrdinaryStorageDirectoryIsAccepted(t *testing.T) {
 	// forbidden ones would reject.
 	for _, directory := range []string{"Mackup", "mackup", ".mackup-backup", "config/mackup/applications-old", "my sync folder"} {
 		world := NewWorld(t)
+		// The storage ROOT, which the environment gate requires to exist. The
+		// sub-directory under test is not created: appspec/01 section 4 makes
+		// its existence a level-2/3 concern of the sync commands, and `list`
+		// has no fifth gate -- so an accepted value is one that lets the run
+		// complete without the sub-folder being there at all.
 		writeConfig(world, "[storage]\nengine = file_system\npath = storage\ndirectory = "+directory+"\n")
+		if err := os.MkdirAll(world.Path("storage"), 0o700); err != nil {
+			t.Fatalf("creating the storage root: %v", err)
+		}
 
-		world.Run("list").ExpectNotImplemented("list")
+		world.Run("list").ExpectExit(0).ExpectStdout(listHeader)
 	}
 }
 

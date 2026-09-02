@@ -3,14 +3,27 @@ package app
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/promptctl/macklebox/internal/ui"
+	"github.com/promptctl/macklebox/internal/version"
+)
+
+// absentStorageConfig is a config file in the package's home directory whose
+// storage engine resolves to absentStorageDirectory, which is never created.
+// Named with -c, it is how a case reaches the environment gate's storage-root
+// arm without disturbing the config every other case relies on.
+const (
+	absentStorageConfig    = "absent-storage.cfg"
+	absentStorageDirectory = "nowhere-at-all"
 )
 
 // TestMain gives the whole package one throwaway home directory to run in.
@@ -34,6 +47,24 @@ func TestMain(m *testing.M) {
 	}
 	config := "[storage]\nengine = file_system\npath = storage\n"
 	if err := os.WriteFile(filepath.Join(home, ".mackup.cfg"), []byte(config), 0o600); err != nil {
+		panic(err)
+	}
+	// And the storage root itself, which the environment gate of appspec/01
+	// section 4 requires to exist before any command runs. The config alone
+	// gets a run past the config gate and no further: appspec/04's
+	// file_system engine deliberately does not check that its path is there,
+	// so the directory is what separates "resolvable" from "usable".
+	if err := os.MkdirAll(filepath.Join(home, "storage"), 0o700); err != nil {
+		panic(err)
+	}
+	// A second config, named only through -c, whose storage root is not there.
+	// The environment gate is the one stage that can refuse a resolvable
+	// config (appspec/04 clause 2 leaves the existence check to it), so a case
+	// about the gate needs a config that loads and a root that does not exist
+	// -- and writing it here rather than per case keeps the package's one
+	// throwaway home the only directory these cases touch.
+	absent := "[storage]\nengine = file_system\npath = " + absentStorageDirectory + "\n"
+	if err := os.WriteFile(filepath.Join(home, absentStorageConfig), []byte(absent), 0o600); err != nil {
 		panic(err)
 	}
 	// Both of the other two discovery candidates are cleared, not just HOME:
@@ -86,6 +117,9 @@ func TestTheseCasesRunAgainstAThrowawayHomeNotTheDevelopers(t *testing.T) {
 	home := os.Getenv("HOME")
 	if _, err := os.Stat(filepath.Join(home, ".mackup.cfg")); err != nil {
 		t.Fatalf("HOME is %q, which holds no .mackup.cfg: these cases are reading a real machine", home)
+	}
+	if info, err := os.Stat(filepath.Join(home, "storage")); err != nil || !info.IsDir() {
+		t.Fatalf("HOME is %q, whose storage root is not a directory: every case below would stop at the environment gate", home)
 	}
 	if os.Getenv("MACKUP_CONFIG") != "" || os.Getenv("XDG_CONFIG_HOME") != "" {
 		t.Error("a discovery variable is set, so the config read is not this package's")
@@ -197,12 +231,12 @@ func TestBareInvocationShowsUsage(t *testing.T) {
 }
 
 func TestSubcommandsReachDispatch(t *testing.T) {
-	// Until the resolver and sync tickets land every subcommand reports that
-	// it is unimplemented -- but it does so from dispatch, which proves argv
-	// carried it through the whole pipeline.
+	// Until the sync tickets land the five copy/link subcommands report that
+	// they are unimplemented -- but they do so from dispatch, which proves
+	// argv carried them through the whole pipeline. list and show are no
+	// longer in this list because they now do their work; the cases below
+	// assert that, which is the same claim in its final form.
 	for _, argv := range [][]string{
-		{"list"},
-		{"show", "vim"},
 		{"backup"},
 		{"restore", "vim"},
 		{"link"},
@@ -292,7 +326,9 @@ func TestFatalDiagnosticsAreColoredOnStderr(t *testing.T) {
 	}{
 		{"the force-flag conflict", []string{"--force", "--force-no", "backup"}},
 		{"a usage error's warning line", []string{"frobnicate"}},
-		{"an unimplemented subcommand", []string{"list"}},
+		{"an unimplemented subcommand", []string{"backup"}},
+		{"an unknown application named to show", []string{"show", "frobnicate"}},
+		{"the environment gate's storage-root refusal", []string{"-c", absentStorageConfig, "list"}},
 	} {
 		got := run(c.argv...)
 		if got.code == ExitOK {
@@ -348,5 +384,372 @@ func TestTheUsageBlockIsNotColored(t *testing.T) {
 	}
 	if ui.HasColor(block) {
 		t.Errorf("the usage block on stderr = %q, want it uncoloured", block)
+	}
+}
+
+// TestTheRootGuardRefusesTheSuperuserWithoutRoot drives both arms of
+// appspec/07's "The superuser (root) guard", which is the one contract in this
+// program no test can reach by running as the user it runs as.
+//
+// appspec/07 marks it UNVERIFIED for exactly that reason -- "the harness ran
+// only as a non-root user, so the root-refusal path and the --root bypass were
+// not exercised directly" -- so the conformance suite can observe the
+// permitted arm and nothing else. Without the effectiveUID seam the refusing
+// arm is a branch no fixture takes, which is to say a branch a green gate says
+// nothing about: deleting the guard entirely would pass every other case in
+// this repository.
+func TestTheRootGuardRefusesTheSuperuserWithoutRoot(t *testing.T) {
+	defer asSuperuser()()
+
+	got := run("list")
+	if got.code != ExitFailure {
+		t.Errorf("exit = %d, want %d", got.code, ExitFailure)
+	}
+	if !strings.Contains(got.errText(), "superuser") {
+		t.Errorf("stderr = %q, want the superuser warning appspec/07 specifies", got.stderr)
+	}
+	if !strings.Contains(got.errText(), "--help") {
+		t.Errorf("stderr = %q, want it to point at `mackup --help` for guidance", got.stderr)
+	}
+	if got.stdout != "" {
+		t.Errorf("stdout = %q, want nothing: the guard aborts before the command does work", got.stdout)
+	}
+}
+
+// TestTheRootFlagPermitsTheSuperuser is the bypass half: "With --root / -r,
+// running as superuser is permitted (the guard passes)." Both spellings,
+// because appspec/02 makes the short and long forms interchangeable and a
+// guard reading only one of them refuses a user who typed the other.
+func TestTheRootFlagPermitsTheSuperuser(t *testing.T) {
+	defer asSuperuser()()
+
+	for _, argv := range [][]string{{"--root", "list"}, {"-r", "list"}} {
+		got := run(argv...)
+		if got.code != ExitOK {
+			t.Errorf("mackup %s exit = %d, want %d: --root permits the superuser", argv, got.code, ExitOK)
+		}
+		if !strings.HasPrefix(got.outText(), listHeader) {
+			t.Errorf("mackup %s stdout = %q, want the listing", argv, got.stdout)
+		}
+	}
+}
+
+// TestTheRootGuardRefusesEveryCommandAlike pins the "universal" in appspec/01
+// section 4's universal environment check: the guard is level 1 of the
+// lattice, which every command passes identically, so list and show are
+// refused in the same words as a sync command.
+func TestTheRootGuardRefusesEveryCommandAlike(t *testing.T) {
+	defer asSuperuser()()
+
+	first := run("list")
+	for _, argv := range [][]string{{"show", "vim"}, {"backup"}, {"restore", "vim"}, {"link"}} {
+		got := run(argv...)
+		if got.code != ExitFailure || got.stderr != first.stderr {
+			t.Errorf("mackup %s = %+v, want the same refusal `mackup list` got: %q", argv, got, first.stderr)
+		}
+	}
+}
+
+// TestTheRootGuardIsCheckedBeforeTheStorageRoot states the order of the two
+// level-1 checks, which is only observable when both would fail.
+//
+// appspec/01 section 3 says effective UID 0 "aborts any command before it does
+// work", and stating which diagnostic wins is what keeps that from being
+// re-ordered later on the grounds that the storage root is the cheaper check.
+func TestTheRootGuardIsCheckedBeforeTheStorageRoot(t *testing.T) {
+	defer asSuperuser()()
+
+	text := run("-c", absentStorageConfig, "list").errText()
+	if !strings.Contains(text, "superuser") {
+		t.Errorf("stderr = %q, want the root guard's refusal", text)
+	}
+	if strings.Contains(text, "Unable to find the storage folder") {
+		t.Errorf("stderr = %q, want the storage root not to have been consulted at all", text)
+	}
+}
+
+// asSuperuser makes the guard see effective UID 0 and returns the restore.
+//
+// A function rather than a bare assignment so the restore cannot be forgotten:
+// a case that left the override in place would make every case after it in
+// this package run as a superuser, and the ones that expect a command to
+// succeed would fail somewhere other than where the defect is.
+func asSuperuser() func() {
+	restore := effectiveUID
+	effectiveUID = func() int { return 0 }
+	return func() { effectiveUID = restore }
+}
+
+// TestAnAbsentStorageRootIsRefusedByTheGateAndNamed is appspec/07's
+// "Storage-root directory missing (usable-env check)" row: the guarded
+// `Error: Unable to find the storage folder: <path>` line, exit 1.
+//
+// It is also where appspec/04's deliberately missing existence check lands.
+// The config here RESOLVES -- the file_system engine returns its path without
+// looking -- so a run that got this far proves the engine did not check, and a
+// run that stops here proves the gate did.
+func TestAnAbsentStorageRootIsRefusedByTheGateAndNamed(t *testing.T) {
+	got := run("-c", absentStorageConfig, "list")
+	if got.code != ExitFailure {
+		t.Errorf("exit = %d, want %d", got.code, ExitFailure)
+	}
+	want := "Error: Unable to find the storage folder: " + filepath.Join(os.Getenv("HOME"), absentStorageDirectory) + "\n"
+	if got.errText() != want {
+		t.Errorf("stderr = %q, want exactly %q once its colour is stripped", got.stderr, want)
+	}
+	if got.stdout != "" {
+		t.Errorf("stdout = %q, want nothing", got.stdout)
+	}
+}
+
+// TestTheStorageRootMustBeADirectory reads appspec/01 section 4's wording as
+// it is written -- "storage-root DIRECTORY exists" -- rather than as "the path
+// is there".
+//
+// A regular file at the storage root cannot hold the Mackup folder appspec/06
+// creates inside it, so accepting one only moves the failure to the first copy,
+// where appspec/07 has no row for it.
+func TestTheStorageRootMustBeADirectory(t *testing.T) {
+	home := os.Getenv("HOME")
+	name := "storage-is-a-file.cfg"
+	root := filepath.Join(home, "storage-file")
+	if err := os.WriteFile(root, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("writing the fixture: %v", err)
+	}
+	defer os.Remove(root)
+	config := "[storage]\nengine = file_system\npath = storage-file\n"
+	if err := os.WriteFile(filepath.Join(home, name), []byte(config), 0o600); err != nil {
+		t.Fatalf("writing the config: %v", err)
+	}
+	defer os.Remove(filepath.Join(home, name))
+
+	got := run("-c", name, "list")
+	if got.code != ExitFailure || !strings.Contains(got.errText(), "Unable to find the storage folder: "+root) {
+		t.Errorf("mackup -c %s list = %+v, want the storage folder refused and named", name, got)
+	}
+}
+
+// TestTheEnvironmentGateBlocksListAndShowLikeEverythingElse is the done-claim
+// of this ticket read literally: appspec/01 section 1 says list and show
+// "otherwise touch no storage", and appspec/02 says they fail anyway.
+//
+// Compared against the sync commands' own output rather than against a
+// sentence written here, so the claim is "identically" and not merely "also".
+func TestTheEnvironmentGateBlocksListAndShowLikeEverythingElse(t *testing.T) {
+	backup := run("-c", absentStorageConfig, "backup")
+	for _, argv := range [][]string{{"list"}, {"show", "vim"}} {
+		got := run(append([]string{"-c", absentStorageConfig}, argv...)...)
+		if got.code != backup.code || got.stderr != backup.stderr || got.stdout != "" {
+			t.Errorf("mackup %s = %+v, want exactly what backup got: exit %d, stderr %q", argv, got, backup.code, backup.stderr)
+		}
+	}
+}
+
+// listing is `list` output split into the three parts appspec/05 gives it: the
+// header, the key lines, and the count trailer.
+type listing struct {
+	keys    []string
+	trailer string
+}
+
+// parseListing reads `list` output as appspec/05 "Enumeration" describes it,
+// failing the case if the shape is not the one specified.
+//
+// The shape is checked here rather than assumed, so that a case asserting
+// something ABOUT the keys cannot pass over output that is not a listing at
+// all -- which is what an assertion built from Contains on a 617-line stream
+// would do.
+func parseListing(t *testing.T, got result) listing {
+	t.Helper()
+	if got.code != ExitOK {
+		t.Fatalf("mackup list exit = %d, want %d\nstderr: %q", got.code, ExitOK, got.stderr)
+	}
+	if got.stderr != "" {
+		t.Errorf("stderr = %q, want nothing: appspec/07 puts list output on stdout", got.stderr)
+	}
+	lines := strings.Split(strings.TrimSuffix(got.outText(), "\n"), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("stdout = %q, want a header, key lines, a blank line and a trailer", got.stdout)
+	}
+	if lines[0] != listHeader {
+		t.Fatalf("first line = %q, want %q", lines[0], listHeader)
+	}
+	if blank := lines[len(lines)-2]; blank != "" {
+		t.Errorf("the line before the trailer = %q, want it blank as appspec/05 writes the block", blank)
+	}
+	var keys []string
+	for _, line := range lines[1 : len(lines)-2] {
+		if !strings.HasPrefix(line, entryPrefix) {
+			t.Fatalf("key line = %q, want it to open with %q", line, entryPrefix)
+		}
+		keys = append(keys, strings.TrimPrefix(line, entryPrefix))
+	}
+	return listing{keys: keys, trailer: lines[len(lines)-1]}
+}
+
+// TestListPrintsSortedKeysAndACountThatMatchesThem pins the two halves of
+// appspec/05's list block against each other.
+//
+// The count is not asserted as a number: 614 is the catalog's business and
+// internal/catalog pins it against the appendix. What this case asserts is
+// that the trailer counts the lines actually printed -- the property
+// appspec/05 states as one claim ("makes key myapp appear in list, increments
+// the supported-count trailer by one") and that two independently computed
+// numbers would break.
+func TestListPrintsSortedKeysAndACountThatMatchesThem(t *testing.T) {
+	got := parseListing(t, run("list"))
+
+	if len(got.keys) == 0 {
+		t.Fatal("list printed no applications; the built-in catalog should be in the binary")
+	}
+	if !sort.StringsAreSorted(got.keys) {
+		t.Error("the keys are not sorted ascending, which appspec/05 requires of list output")
+	}
+	want := fmt.Sprintf("%d applications supported in Mackup v%s", len(got.keys), version.String())
+	if got.trailer != want {
+		t.Errorf("trailer = %q, want %q", got.trailer, want)
+	}
+}
+
+// TestTheListTrailerReportsTheSameVersionAsTheBanner keeps the trailer's
+// version from becoming a literal.
+//
+// appspec/05 gives the trailer as "Mackup v<version>" and appspec/00 makes the
+// version itself a contract with a fallback token -- so a trailer hardcoding
+// the reference build's 0.11.1 would satisfy the format and report a version
+// this build is not.
+func TestTheListTrailerReportsTheSameVersionAsTheBanner(t *testing.T) {
+	trailer := parseListing(t, run("list")).trailer
+	banner := strings.TrimSuffix(run("--version").outText(), "\n")
+
+	if want := "Mackup v" + strings.TrimPrefix(banner, "Mackup "); !strings.HasSuffix(trailer, want) {
+		t.Errorf("trailer = %q, want it to end in %q, the version --version reports", trailer, want)
+	}
+}
+
+// TestListIsNotNarrowedByTheConfigApplicationLists is a contract stated in one
+// sentence of appspec/03 and easy to lose: of the allowlist, "this section
+// does NOT affect list output".
+//
+// It is what makes list an audit surface (appspec/00 promise 5, "let the user
+// see the whole catalog"): a user who has narrowed their sync scope still
+// needs to see everything the narrowing was drawn from. A reimplementation
+// that ran the config's lists over the keys -- which is exactly what the
+// selector of appspec/01 section 1 does for the SYNC commands -- would print a
+// shorter listing and a smaller count, and no other case here would notice.
+func TestListIsNotNarrowedByTheConfigApplicationLists(t *testing.T) {
+	all := parseListing(t, run("list")).keys
+	if len(all) < 2 {
+		t.Fatalf("the catalog holds %d applications; this case needs two to name", len(all))
+	}
+	home := os.Getenv("HOME")
+	name := "scoped.cfg"
+	config := "[storage]\nengine = file_system\npath = storage\n" +
+		"\n[applications_to_sync]\n" + all[0] + "\n" +
+		"\n[applications_to_ignore]\n" + all[1] + "\n"
+	if err := os.WriteFile(filepath.Join(home, name), []byte(config), 0o600); err != nil {
+		t.Fatalf("writing the config: %v", err)
+	}
+	defer os.Remove(filepath.Join(home, name))
+
+	scoped := parseListing(t, run("-c", name, "list"))
+	if !reflect.DeepEqual(scoped.keys, all) {
+		t.Errorf("list under an allowlist and a denylist printed %d applications, want the same %d it prints without one", len(scoped.keys), len(all))
+	}
+	if want := fmt.Sprintf("%d applications", len(all)); !strings.HasPrefix(scoped.trailer, want) {
+		t.Errorf("trailer = %q, want it to open with %q: the count follows the keys printed", scoped.trailer, want)
+	}
+}
+
+// TestShowPrintsTheDisplayNameAndTheSortedFileSet is appspec/05's show block.
+//
+// `mackup` is the application named because it is the one definition whose
+// content the specification itself fixes: appspec/03 makes ~/.mackup.cfg and
+// ~/.mackup the user's own configuration, and appspec/06's whole-Mackup mode
+// syncs them, so the key is not free to drift the way an ordinary
+// application's authored file set is.
+func TestShowPrintsTheDisplayNameAndTheSortedFileSet(t *testing.T) {
+	got := run("show", "mackup")
+	if got.code != ExitOK {
+		t.Fatalf("exit = %d, want %d\nstderr: %q", got.code, ExitOK, got.stderr)
+	}
+	if got.stderr != "" {
+		t.Errorf("stderr = %q, want nothing: appspec/07 puts show output on stdout", got.stderr)
+	}
+	lines := strings.Split(strings.TrimSuffix(got.outText(), "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("stdout = %q, want a name line and the file header", got.stdout)
+	}
+	if !strings.HasPrefix(lines[0], showNamePrefix) || strings.TrimPrefix(lines[0], showNamePrefix) == "" {
+		t.Errorf("first line = %q, want %q followed by a display name", lines[0], showNamePrefix)
+	}
+	if lines[1] != showFilesHeader {
+		t.Errorf("second line = %q, want %q", lines[1], showFilesHeader)
+	}
+	var paths []string
+	for _, line := range lines[2:] {
+		if !strings.HasPrefix(line, entryPrefix) {
+			t.Fatalf("path line = %q, want it to open with %q", line, entryPrefix)
+		}
+		path := strings.TrimPrefix(line, entryPrefix)
+		if strings.HasPrefix(path, "/") {
+			t.Errorf("path = %q, want a home-relative one: appspec/05 rejects absolute paths at assembly", path)
+		}
+		paths = append(paths, path)
+	}
+	if !sort.StringsAreSorted(paths) {
+		t.Errorf("paths = %v, want them sorted ascending", paths)
+	}
+	if want := []string{".mackup", ".mackup.cfg"}; !reflect.DeepEqual(paths, want) {
+		t.Errorf("show mackup listed %v, want %v -- the user's own config and custom-apps directory", paths, want)
+	}
+}
+
+// TestShowRefusesAnUnknownApplicationWithTheLiteralToken is appspec/07's
+// `Unsupported application: <name>` row, one of the three literal tokens that
+// file calls contract "matched by scripts/tests".
+//
+// The whole line is asserted, not a substring of it: a token a script greps
+// for is only as good as its exact spelling, and an assertion by Contains
+// passes over a program that has wrapped the token in something else.
+func TestShowRefusesAnUnknownApplicationWithTheLiteralToken(t *testing.T) {
+	got := run("show", "frobnicate")
+	if got.code != ExitFailure {
+		t.Errorf("exit = %d, want %d", got.code, ExitFailure)
+	}
+	if want := UnsupportedApplicationPrefix + "frobnicate\n"; got.errText() != want {
+		t.Errorf("stderr = %q, want exactly %q once its colour is stripped", got.stderr, want)
+	}
+	if got.stdout != "" {
+		t.Errorf("stdout = %q, want nothing: the command refused its argument", got.stdout)
+	}
+}
+
+// TestShowIsCaseSensitiveAboutTheKey follows from appspec/05 making the
+// definition's filename the key and appspec/03 lowercasing only the CONFIG's
+// application lists. The keys the catalog ships are lowercase, so a user
+// typing "Vim" has named an application that does not exist.
+func TestShowIsCaseSensitiveAboutTheKey(t *testing.T) {
+	if got := run("show", "Vim"); got.code != ExitFailure ||
+		got.errText() != UnsupportedApplicationPrefix+"Vim\n" {
+		t.Errorf("mackup show Vim = %+v, want it refused as an unknown key", got)
+	}
+}
+
+// TestListAndShowPrintTheirOutputInColorOffATerminal extends appspec/07's
+// unconditional-colour rule to the two commands this ticket adds. They are the
+// first commands whose SUCCESS writes to stdout, so before them the rule was
+// observable only on the --version banner.
+func TestListAndShowPrintTheirOutputInColorOffATerminal(t *testing.T) {
+	for _, argv := range [][]string{{"list"}, {"show", "mackup"}} {
+		got := run(argv...)
+		if !ui.HasColor(got.stdout) {
+			t.Errorf("mackup %s stdout = %q, want it coloured even though the stream is not a terminal", argv, got.stdout)
+		}
+		for _, line := range strings.Split(strings.TrimSuffix(got.stdout, "\n"), "\n") {
+			if !strings.HasPrefix(line, "\x1b[33m") || !strings.HasSuffix(line, "\x1b[0m") {
+				t.Errorf("mackup %s line = %q, want it opened in yellow (33) and terminated with a reset", argv, line)
+			}
+		}
 	}
 }

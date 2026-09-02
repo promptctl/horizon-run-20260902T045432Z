@@ -1,17 +1,20 @@
 package app
 
 import (
+	"os"
+
 	"github.com/promptctl/macklebox/internal/appdb"
 	"github.com/promptctl/macklebox/internal/cli"
 	"github.com/promptctl/macklebox/internal/config"
+	"github.com/promptctl/macklebox/internal/fault"
 )
 
 // The startup stages between argv parsing and dispatch. They exist as named
 // seams so the dispatch order of appspec/02-invocation.md ("Command dispatch
 // order and the universal config-load gate") is expressed by the pipeline
 // rather than assumed, and so each resolver drops into its own place instead of
-// restructuring Main. The last of them is still a stub; the ticket that fills
-// it is named on it.
+// restructuring Main. All three are filled in now; the order they are called
+// in from runPipeline IS the dispatch order appspec/02 specifies.
 
 // loadConfig resolves the user config file and, with it, the storage location
 // (appspec/03, appspec/04).
@@ -67,6 +70,73 @@ func assembleApplicationDatabase() (*appdb.Database, error) {
 // the root the config resolved -- and that is where appspec/04's deliberately
 // missing file_system existence check is finally enforced.
 //
-// TODO(macklebox-resolvers-5iw.4): implement the root guard and storage-root
-// existence check.
-func environmentGate(cli.Invocation, *config.Config) error { return nil }
+// The two checks are in the order appspec/01 section 4 writes them, and the
+// order is observable: a superuser run against a machine with no storage
+// folder reports the guard rather than the folder. Refusing root first is also
+// the only order that keeps the guard's promise -- appspec/01 says effective
+// UID 0 "aborts any command BEFORE IT DOES WORK", and a stat of a path the
+// superuser can reach is work the guard was meant to prevent.
+func environmentGate(inv cli.Invocation, cfg *config.Config) error {
+	if err := refuseSuperuser(inv.Opts.Root); err != nil {
+		return err
+	}
+	return requireStorageRoot(cfg.Root())
+}
+
+// effectiveUID reports the process's effective user id.
+//
+// A seam for the same reason internal/version indirects debug.ReadBuildInfo:
+// appspec/07 marks the root-refusal path UNVERIFIED because "the harness ran
+// only as a non-root user", and a guard whose refusing arm no test can take is
+// a guard a passing suite says nothing about. The conformance suite observes
+// the permitted arm -- it runs as an ordinary user, where every command must
+// work with and without --root -- and internal/app's own tests drive both arms
+// through here.
+var effectiveUID = os.Geteuid
+
+// refuseSuperuser implements appspec/07 "The superuser (root) guard".
+//
+// "If the process's effective user id is 0 (running as superuser) and --root /
+// -r was not given, the program writes a fatal error to stderr warning that
+// running as superuser can be dangerous and to run `mackup --help` for
+// guidance, and exits 1." Running as an ordinary user always passes, and
+// --root then has no observable effect.
+//
+// A guarded BLOCK rather than a Guardedf sentence: appspec/07's error table
+// gives this row the guarded column but does not give it an "Error: " sentence
+// the way it gives one to the storage-root row below, and the information
+// content it does specify is two things -- the danger and where to look --
+// which is the shape its two multi-line guarded neighbours take.
+func refuseSuperuser(rootAllowed bool) error {
+	if effectiveUID() != 0 || rootAllowed {
+		return nil
+	}
+	return fault.GuardedBlock(
+		"Running Mackup as a superuser is dangerous: it would sync the root account's\n" +
+			"configuration, and every file it wrote would be owned by root.\n" +
+			"Pass --root if you really mean to, and run `mackup --help` for guidance.")
+}
+
+// requireStorageRoot implements the other half of appspec/01 section 4's level
+// 1: the storage-root directory has to exist.
+//
+// This is the stage appspec/04 defers its file_system existence check TO. That
+// engine "returns the path without any existence check" by design (clause 2),
+// and this is the one place the uniform "Unable to find the storage folder:
+// <path>" of appspec/07's table is raised -- for every engine alike, so a
+// Dropbox root whose host database decoded to a folder that has since been
+// removed fails here exactly as a user-supplied path does.
+//
+// A directory, not merely something that exists: appspec/01 calls the check
+// "storage-root DIRECTORY exists", and the sync engine of appspec/06 creates
+// the Mackup folder inside it. A regular file at that path cannot hold one,
+// and reporting it as found would move the failure to the first copy.
+func requireStorageRoot(root string) error {
+	// Stat and not Lstat: a symlink to the real storage directory is how a
+	// user points ~/Dropbox at a volume, and the directory it resolves to is
+	// the one the folder is created in.
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		return fault.Guardedf("Unable to find the storage folder: %s", root)
+	}
+	return nil
+}
