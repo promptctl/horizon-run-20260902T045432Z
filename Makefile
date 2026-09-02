@@ -16,8 +16,10 @@ LDFLAGS := $(if $(VERSION),-ldflags "-X github.com/promptctl/macklebox/internal/
 
 all: check build
 
+# BINARY is quoted: the conformance suite builds through this target and passes
+# a path derived from TMPDIR, which is not always space-free.
 build:
-	go build $(LDFLAGS) -o $(BINARY) $(PKG)
+	go build $(LDFLAGS) -o "$(BINARY)" $(PKG)
 
 # Every package but the conformance suite, which is run separately below; see
 # the conformance target for why. An empty package list would make `go test`

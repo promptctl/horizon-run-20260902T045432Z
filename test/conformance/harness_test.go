@@ -1,13 +1,23 @@
 //go:build conformance
 
-// The conformance suite is behind a build tag so that `go test ./...` -- what
-// an IDE, gopls, or a second CI job runs by default -- cannot report a cached
-// "ok" for it. This package imports nothing from cmd/ or internal/; it shells
-// out to `go build`, so the test cache key does not change when the program
-// does, and a stale pass outlives a program that has since been broken. A
-// Makefile cannot prevent that: only the tag can, by keeping the package out
-// of the default build entirely. Run it with `make conformance` (or
-// `go test -count=1 -tags conformance ./test/conformance/`).
+// This package imports nothing from cmd/ or internal/ -- it shells out to
+// `go build` -- so nothing about the program under test naturally reaches the
+// Go test cache, and a cached "ok" would outlive a program that has since been
+// broken. Three separate things close that, because no one of them closes all
+// of it:
+//
+//   - readImplementationSources, below, makes the cache honest: cmd/go records
+//     the files a test binary opens and folds them into the cache key, so
+//     changing the program invalidates the cached result. This is the part
+//     that works no matter how the suite is invoked.
+//   - The `conformance` build tag keeps the package out of untagged builds, so
+//     a plain `go test ./...` does not report on it at all rather than
+//     reporting something stale.
+//   - `make conformance` passes -count=1, which needs none of the above to be
+//     right.
+//
+// Run it with `make conformance`, or
+// `go test -count=1 -tags conformance ./test/conformance/`.
 
 // Package conformance observes the built command the way appspec/00-overview.md
 // says the specification itself was written: by running the real program under
@@ -101,6 +111,10 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	// Before anything else, so that it happens on every run of this binary
+	// however few cases are selected.
+	readImplementationSources()
+
 	mackupBin = filepath.Join(dir, "mackup")
 	mackupStampedBin = filepath.Join(dir, "mackup-stamped")
 	if err := buildWithMake(mackupBin, ""); err != nil {
@@ -140,6 +154,37 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// readImplementationSources reads every Go source file of the program under
+// test, for its side effect on the Go test cache.
+//
+// cmd/go records the files a test binary opens and makes them part of the
+// cache key, so reading the implementation here is what ties a cached result
+// to the code it was a result about. Without it `go test -tags conformance
+// ./test/conformance/` reports "ok (cached)" over a program broken since --
+// verified by changing the not-implemented message in internal/app/dispatch.go
+// and watching the suite stay green.
+//
+// Errors are ignored: this is a cache-key contribution, not a check. A source
+// file that cannot be read will fail the build a moment later and say so
+// properly.
+func readImplementationSources() {
+	root, err := moduleRoot()
+	if err != nil {
+		return
+	}
+	for _, dir := range []string{"cmd", "internal"} {
+		filepath.WalkDir(filepath.Join(root, dir), func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") {
+				return nil
+			}
+			os.ReadFile(path)
+			return nil
+		})
+	}
+	// The build is stamped through the Makefile, so it counts as an input too.
+	os.ReadFile(filepath.Join(root, "Makefile"))
+}
+
 // buildDirPrefix names this suite's build directories, so that a later run can
 // recognize one an earlier run abandoned.
 const buildDirPrefix = "macklebox-conformance-bin-"
@@ -176,7 +221,13 @@ func requireVCSStampedBuild(t *testing.T) string {
 		return mackupVCSBin
 	}
 	why := fmt.Sprintf("no VCS-stamped build is available, so the pseudo-version half of the provenance contract cannot be exercised here: %v", mackupVCSBuildErr)
-	if os.Getenv("CI") != "" {
+	// CI=false and CI=0 are both things people export deliberately; neither
+	// means "running under CI", and treating them as such would turn a skip
+	// this code chose to tolerate into a failed `make check` on a developer's
+	// own machine.
+	switch os.Getenv("CI") {
+	case "", "false", "0":
+	default:
 		t.Fatal(why)
 	}
 	t.Skip(why)
@@ -530,6 +581,13 @@ func (w *World) Snapshot() Snapshot {
 			snapshot[relative] = fmt.Sprintf("symlink %04o @%d -> %s", info.Mode().Perm(), stamp, target)
 		case entry.IsDir():
 			snapshot[relative] = fmt.Sprintf("dir %04o @%d", info.Mode().Perm(), stamp)
+		case !info.Mode().IsRegular():
+			// Recorded by type, never opened. A home directory holds FIFOs and
+			// unix sockets -- ~/.gnupg is full of them, and this program walks
+			// home directories -- and opening a FIFO with no writer blocks
+			// until the test binary's own timeout kills the run, turning a
+			// filesystem change into a hang.
+			snapshot[relative] = fmt.Sprintf("%s %04o @%d", info.Mode().Type(), info.Mode().Perm(), stamp)
 		default:
 			content, err := os.ReadFile(path)
 			if err != nil {
