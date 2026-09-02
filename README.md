@@ -86,8 +86,16 @@ to the code that implements it.
 Every case must be able to fail for the reason it claims. Two rules follow:
 assert what the program *did*, never merely that it did not print a usage
 error; and never pin help, usage, or warning wording, which `appspec/02`
-declares human-facing and not contract — the suite knows that wording in one
-named constant, `usageMarker`, and nowhere else.
+declares human-facing and not contract.
+
+The suite holds implementation-owned wording in exactly two places, both
+deliberate and both temporary. `usageMarker` is the one token of the usage
+block any case matches on. `ExpectNotImplemented` matches the dispatch stub's
+`Error: <cmd> is not implemented yet.`, so that "argv accepts this form" can be
+asserted positively rather than as the absence of a usage error; each use is
+replaced by an assertion on the command's real behavior as that command's
+ticket lands. Reword either and the suite fails — which is the point, but know
+where to look.
 
 `--version` reports the package's own version when one was stamped in, and the
 fallback token `unknown` otherwise, per the spec's provenance rule.

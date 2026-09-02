@@ -11,6 +11,11 @@
 package conformance
 
 import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -438,9 +443,12 @@ func TestTheReaperJudgesTheEntryItRemoves(t *testing.T) {
 	if _, err := os.Lstat(link); err != nil {
 		t.Errorf("the sweep removed %s, which was created moments ago; it was judged by the modification time of what it points at rather than its own", filepath.Base(link))
 	}
-	if _, err := os.Lstat(target); err != nil {
-		t.Errorf("the sweep followed %s and removed what it points at: %v", filepath.Base(link), err)
-	}
+	// There was an assertion here that the link's target survived. It could
+	// not fail, and it is gone rather than reworded: RemoveAll's first act is
+	// Remove, which unlinks a symlink instead of descending it, so the target
+	// survives under the Stat mutation too -- verified, along with a file
+	// inside it. No mutation of this reaper reaches the target, so nothing
+	// here can witness one that did.
 	// And the ordinary behaviour still holds, so the case above cannot be
 	// satisfied by a reaper that reaps nothing at all.
 	if _, err := os.Lstat(abandoned); !os.IsNotExist(err) {
@@ -510,6 +518,78 @@ func TestAssertionsOnAResultSurviveACapturedRegion(t *testing.T) {
 	if len(reported) == 0 {
 		t.Error("an assertion on a Result produced inside a captured region reported nothing; the Result is still reporting into the recorder that region used, so every assertion made on it is silently discarded")
 	}
+}
+
+func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
+	// Go's convention -- a doc comment opens with the name it documents -- is
+	// worth enforcing here for a specific reason rather than as style. Twice
+	// on this branch a declaration was inserted between a doc comment and the
+	// thing it described, silently reassigning the comment: the reporter
+	// interface took World's, and ExpectFailureExit took ExpectStdout's, so
+	// godoc told a reader that ExpectFailureExit asserts on stdout. Nothing
+	// failed either time; a comment describing the wrong code is exactly the
+	// defect this branch has spent its review rounds removing, and it is the
+	// one shape of it a machine can catch.
+	//
+	// Declarations with no doc at all are not the subject and are skipped:
+	// the recorder's one-line Helper and Errorf do not want a paragraph.
+	root, err := moduleRoot()
+	if err != nil {
+		t.Fatalf("locating the module root: %v", err)
+	}
+
+	checked := 0
+	for _, dir := range []string{"cmd", "internal", "test"} {
+		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") {
+				return err
+			}
+			file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments)
+			if err != nil {
+				return fmt.Errorf("parsing %s: %v", path, err)
+			}
+			for _, declaration := range file.Decls {
+				name, doc := declaredNameAndDoc(declaration)
+				if doc == nil {
+					continue
+				}
+				checked++
+				words := strings.Fields(doc.Text())
+				if len(words) == 0 || words[0] == name {
+					continue
+				}
+				relative, _ := filepath.Rel(root, path)
+				t.Errorf("%s: the doc comment on %s opens with %q; either it belongs to something else and a declaration was inserted under it, or it does not follow the convention the rest of the tree does", relative, name, words[0])
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walking %s: %v", dir, err)
+		}
+	}
+
+	// The walk has to have found something, or this passes by reaching no
+	// files at all -- a renamed directory, a build tag, a bad root.
+	if checked == 0 {
+		t.Fatal("no documented declarations were examined, so this case proved nothing")
+	}
+}
+
+// declaredNameAndDoc returns the name a declaration introduces and the doc
+// comment attached to it. Only functions and single-specification type
+// declarations have a name a doc comment is expected to open with; everything
+// else, a grouped const block above all, reports no name and is skipped.
+func declaredNameAndDoc(declaration ast.Decl) (string, *ast.CommentGroup) {
+	switch d := declaration.(type) {
+	case *ast.FuncDecl:
+		return d.Name.Name, d.Doc
+	case *ast.GenDecl:
+		if d.Tok != token.TYPE || len(d.Specs) != 1 {
+			return "", nil
+		}
+		return d.Specs[0].(*ast.TypeSpec).Name.Name, d.Doc
+	}
+	return "", nil
 }
 
 func TestExpectUnchangedReportsEveryShapeOfChange(t *testing.T) {

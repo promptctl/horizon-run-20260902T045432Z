@@ -757,8 +757,6 @@ func (r Result) ExpectExit(code int) Result {
 	return r
 }
 
-// ExpectStdout asserts stdout contains want. appspec/07 makes the stream a
-// message lands on contract, so every message assertion names its stream.
 // ExpectFailureExit asserts the process failed, without saying how. For a
 // condition the spec gives an exit code, use ExpectExit; this is for the ones
 // it leaves to the implementation, where pinning the number would fail a
@@ -771,6 +769,8 @@ func (r Result) ExpectFailureExit() Result {
 	return r
 }
 
+// ExpectStdout asserts stdout contains want. appspec/07 makes the stream a
+// message lands on contract, so every message assertion names its stream.
 func (r Result) ExpectStdout(want string) Result {
 	r.w.t.Helper()
 	if !strings.Contains(r.Stdout, want) {
