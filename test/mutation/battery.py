@@ -289,32 +289,45 @@ MUTATIONS = [
  # RIG-BLIND accurately. internal/ui's unit tests carry it until a composed
  # message exists; add the entry with that message.
 
+ # Each `expect` here names the UNIT diagnostic, not the conformance one, and
+ # that is not a compromise -- it is what the string is matched against. The
+ # battery matches expect against `make check`, and `make check` runs the unit
+ # packages FIRST and stops at the first failure, so a mutation to internal/
+ # that the unit tests kill never produces a line of conformance output for an
+ # expect to match. Every one of these six was first written with the wording
+ # of the conformance case it was really aimed at and every one of them
+ # reported WRONG-DIAGNOSTIC on a mutation the gate had killed correctly. The
+ # rig half of the claim is not lost by writing it this way: it is carried by
+ # the separate `make conformance` run below, which is what turns a
+ # unit-tests-only kill into RIG-BLIND, and the [rig: ...] note on a kill line
+ # names the conformance case that saw it.
+
  ("colour is not emitted at all", [repl(C,
    '\topen := escape + spec.sgr + "m"\n\treturn open + embeddedReset.ReplaceAllString(text, reset+open) + reset',
    '\t_ = spec\n\treturn text')],
-   'want it coloured'),
+   'with no colour to a non-terminal stream'),
 
  ("a coloured string is not terminated with a reset", [repl(C,
    '\treturn open + embeddedReset.ReplaceAllString(text, reset+open) + reset',
    '\treturn open + embeddedReset.ReplaceAllString(text, reset+open)')],
-   'want it to end in a reset'),
+   'want the newline after the reset'),
 
  # appspec/07 gives fatal errors bright red and non-fatal copy failures red,
  # and colour alone conveys the level -- so flattening the two erases the only
  # thing that says whether the program stopped.
  ("a fatal error takes the non-fatal colour", [repl(C,
    'Fatal:       {sgr: "91"', 'Fatal:       {sgr: "31"')],
-   'want it to open with'),
+   'appspec/07 distinguishes bright red 91 from red 31'),
 
  # The stream is contract, not cosmetics. This is that defect in its purest
  # form: the message is right, the colour is right, the stream is wrong.
  ("a fatal diagnostic is routed to stdout", [repl(C,
    'Fatal:       {sgr: "91", on: toStderr', 'Fatal:       {sgr: "91", on: toStdout')],
-   'want nothing'),
+   'Fatal stream = 0, want 1'),
 
  ("the version banner loses its colour", [repl(A,
    'streams.Say(ui.Progress, version.Banner())', 'streams.Outln(version.Banner())')],
-   'want it coloured'),
+   'want the banner coloured even though the stream is not a terminal'),
 
  # The opposite mistake to the one above, and the reason the decision is
  # written down in the program and in the case: appspec/07 lists no level for
@@ -322,7 +335,7 @@ MUTATIONS = [
  ("the usage block is coloured", [repl(A,
    '\tcase inv.Opts.Help:\n\t\tstreams.Outln(cli.Usage)',
    '\tcase inv.Opts.Help:\n\t\tstreams.Say(ui.Progress, cli.Usage)')],
-   'want no colour'),
+   'carries colour; the usage block has no level in appspec/07'),
 
  # appspec/07: the program does not condition colour on whether stdout is a
  # TTY. The rig runs every process down a pipe, so a program that consulted a
