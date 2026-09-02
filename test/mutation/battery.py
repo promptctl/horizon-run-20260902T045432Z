@@ -620,6 +620,14 @@ MUTATIONS = [
  # "Unable to find the storage folder: <path>" belongs to the environment gate
  # -- so a stat here does not break a postcondition, it moves a message to the
  # wrong stage. Nothing in the tree but the two tests this kills says so.
+ #
+ # It went RIG-BLIND for one commit, and the reason is worth keeping: once the
+ # gate existed, a stat in the engine produced the gate's OWN line, so the
+ # conformance case asserting that line could not tell the two stages apart.
+ # Two stages are distinguishable only where they disagree, and between these
+ # two stands database assembly --
+ # TestTheStorageRootIsCheckedAfterTheDatabaseIsAssembled is what restored the
+ # rig's sight, and it is still the only case that has it.
  ("the file_system engine gains an existence check", [repl(ST,
    '\tif filepath.IsAbs(f.path) {\n'
    '\t\treturn f.path, nil\n'

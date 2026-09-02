@@ -557,12 +557,12 @@ func TestTheEnvironmentGateAndNotTheEngineRefusesAPathThatIsNotThere(t *testing.
 	// delete it, because the guarantee it defends is not "a nonexistent path
 	// is accepted".
 	//
-	// The two stages are told apart by their diagnostics, which appspec/07
-	// puts on different rows: the engine's own failure is the guarded
-	// multi-line "Unable to find your <provider> =(", and the gate's is this
-	// single line. A program that moved the check into the engine would still
-	// exit 1 on this world, which is why the whole line is asserted and not
-	// just the failure.
+	// The whole line is asserted rather than the failure, because a program
+	// that moved the check into the engine still exits 1 here. That is as far
+	// as this world goes: an engine raising the gate's own line is invisible
+	// to it, since the two stages agree about every byte of the output. The
+	// case below is what tells them apart, and the two are only honest
+	// together.
 	world := NewWorld(t)
 	writeConfig(world, "[storage]\nengine = file_system\npath = nowhere/at/all\n")
 	before := world.Snapshot()
@@ -575,6 +575,36 @@ func TestTheEnvironmentGateAndNotTheEngineRefusesAPathThatIsNotThere(t *testing.
 	// path that is not absolute resolves under HOME, not under the working
 	// directory -- and the command runs with its working directory at the
 	// world's root, so the two are different directories here.
+	world.ExpectUnchanged(before)
+}
+
+func TestTheStorageRootIsCheckedAfterTheDatabaseIsAssembled(t *testing.T) {
+	// The half of "which stage refuses" that has teeth. Two stages are only
+	// distinguishable where they disagree about what to report, and between
+	// these two stands a third: appspec/01 section 4 orders the startup as
+	// config (step 2), application database (step 3), environment gate (step
+	// 4).
+	//
+	// So a world whose storage path is not there AND whose ~/.mackup holds a
+	// definition with an absolute path must report appspec/05's rejection:
+	// assembly runs first and refuses before the gate ever stats anything. An
+	// engine that stats its own path reports the storage folder instead,
+	// because it ran a stage earlier -- and it reports the very line the gate
+	// would have written, which is exactly why the case above cannot see it.
+	world := NewWorld(t)
+	writeConfig(world, "[storage]\nengine = file_system\npath = nowhere/at/all\n")
+	world.WriteFile(".mackup/myapp.cfg", poisonedDefinition, 0o600)
+	before := world.Snapshot()
+
+	text := world.Run("list").ExpectFailureExit().ExpectSilentStdout().StderrText()
+	if !strings.Contains(text, absolutePathRefusal) {
+		t.Errorf("mackup list wrote %q, want %q: the database is assembled before the environment gate runs",
+			text, absolutePathRefusal)
+	}
+	if strings.Contains(text, storageFolderRefusal) {
+		t.Errorf("mackup list wrote %q, and naming the storage folder at all means a stage before assembly checked it",
+			text)
+	}
 	world.ExpectUnchanged(before)
 }
 
