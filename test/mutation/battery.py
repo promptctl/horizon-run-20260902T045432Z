@@ -403,6 +403,19 @@ MUTATIONS = [
    '')],
    "no report names home/sealed/cfg"),
 
+ # The unreadable-file record's size, and the anchoring of the blindness
+ # scan. Both were added because mode-and-stamp alone, and Contains, are the
+ # obvious spellings -- so both are the shape a later edit drifts back to.
+ ("the unreadable-file record drops its size", [repl(H,
+   'fmt.Sprintf("file %04o %dB @%d <unreadable>", info.Mode().Perm(), info.Size(), stamp)',
+   'fmt.Sprintf("file %04o @%d <unreadable>", info.Mode().Perm(), stamp)')],
+   "no report names home/secret"),
+
+ ("the blindness scan matches anywhere in the record", [
+   repl(H, 'strings.HasPrefix(record, entryUnstatable)', 'strings.Contains(record, entryUnstatable)'),
+   repl(H, 'strings.HasSuffix(record, contentsUnreadable)', 'strings.Contains(record, contentsUnreadable)')],
+   "over a readable file whose CONTENT holds the marker text"),
+
  ("moduleRoot walks up from runtime.Caller", [
    repl(H, '\t"path/filepath"\n', '\t"path/filepath"\n\t"runtime"\n'),
    repl(H, '\tdir, err := os.Getwd()\n\tif err != nil {\n\t\treturn "", fmt.Errorf("locating the module root: %v", err)\n\t}',

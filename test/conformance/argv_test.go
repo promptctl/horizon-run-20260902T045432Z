@@ -1591,6 +1591,57 @@ func TestExpectUnchangedReportsEveryShapeOfChange(t *testing.T) {
 			world.SnapshotKey("sealed", "cfg"), "could not be examined at all")
 	})
 
+	t.Run("an unreadable file resized with its stamp put back", func(t *testing.T) {
+		// The shape that pins the size field in the unreadable-file record.
+		// A readable file records its bytes, which witness any rewrite
+		// independently of the clock; an unreadable one cannot, so mode and
+		// stamp were the whole record and a rewrite that landed inside the
+		// filesystem's stamp granularity moved nothing. Restoring the stamp
+		// here reproduces that granularity exactly, on any filesystem, rather
+		// than waiting for an ext3 or HFS+ machine to find it.
+		//
+		// 0200 and not 0000: write-only is what makes the shape reachable at
+		// all, since the branch under test needs a file this process cannot
+		// READ but something can still rewrite -- which is precisely a program
+		// writing to a path it was configured with.
+		if os.Geteuid() == 0 {
+			t.Skip("root can read a 0200 file, so the unreadable-file branch is unreachable here")
+		}
+		world := NewWorld(t)
+		path := world.WriteFile("secret", original, 0o200)
+		stat, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stating %s: %v", path, err)
+		}
+		before := world.Snapshot()
+		if err := os.WriteFile(path, []byte(original+"# appended\n"), 0o200); err != nil {
+			t.Fatalf("rewriting %s: %v", path, err)
+		}
+		if err := os.Chtimes(path, stat.ModTime(), stat.ModTime()); err != nil {
+			t.Fatalf("restoring the stamp of %s: %v", path, err)
+		}
+		expectReported(t, world.captureReport(t, func() { world.ExpectUnchanged(before) }),
+			world.SnapshotKey("secret"), "changed")
+	})
+
+	t.Run("a fixture whose bytes hold a blindness marker", func(t *testing.T) {
+		// The blindness scan matches its markers at a fixed end of the record,
+		// not with Contains, and this is why. A regular file's record carries
+		// its %q-rendered content, so a Contains scan reads a fixture whose
+		// bytes happen to hold the marker text as a degraded record: the case
+		// fails with nothing changed and nothing blind, and the diagnostic
+		// tells the author to make a fixture readable that already is.
+		//
+		// Contrived as a fixture, not as a shape -- this suite's own testdata
+		// holds deliberately odd bytes, and appspec/05's application database
+		// is a set of files whose contents the program copies verbatim.
+		world := NewWorld(t)
+		world.WriteFile("notes", "a directory here <contents unreadable>\n<unstatable>\n", 0o600)
+		if reported := world.captureReport(t, func() { world.ExpectUnchanged(world.Snapshot()) }); len(reported) != 0 {
+			t.Errorf("ExpectUnchanged reported %v over a readable file whose CONTENT holds the marker text; nothing here is blind", reported)
+		}
+	})
+
 	t.Run("mode changed with the bytes and the stamp left alone", func(t *testing.T) {
 		// The shape that pins the mode field. chmod moves ctime, which
 		// Snapshot does not record, and leaves both the bytes and the

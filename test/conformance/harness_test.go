@@ -714,6 +714,21 @@ func goflagsForcingVCSStamp(env []string) (string, error) {
 	command.Env = env
 	reported, err := command.Output()
 	if err != nil {
+		// Output(), not CombinedOutput(), because the stdout of this command
+		// IS the value being parsed and merging stderr into it would corrupt
+		// the GOFLAGS string. That makes the error the one place the child's
+		// own diagnosis can live, and %v alone throws it away: an *exec.
+		// ExitError renders as "exit status 2" and nothing else, while the
+		// reason -- a malformed GOENV file, a setting the toolchain rejects --
+		// sits in ExitError.Stderr, which Output() populated. Verified against
+		// a deliberately bad `go env` invocation. Discarding it made this the
+		// one build helper in the file that reported a failure the way the
+		// comment on requireVCSStampedBuild says none of them may: fatal under
+		// CI, with nothing to diagnose from.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+			return "", fmt.Errorf("reading GOFLAGS from go env: %v\n%s", err, exit.Stderr)
+		}
 		return "", fmt.Errorf("reading GOFLAGS from go env: %v", err)
 	}
 	return strings.TrimSpace(strings.TrimSpace(string(reported)) + " -buildvcs=true"), nil
@@ -1266,10 +1281,26 @@ func (w *World) Snapshot() Snapshot {
 				// read is ordinary; aborting here would replace the case's
 				// own assertion with a complaint about the harness, and the
 				// post-condition the case exists to check would go unmade.
-				// Mode and stamp still come from the stat, so a rewrite is
-				// still visible.
+				// Mode, size and stamp all still come from the stat, so a
+				// rewrite is still visible -- and the size is here because
+				// mode and stamp alone were not enough. For a READABLE file
+				// the recorded bytes are a second witness that does not depend
+				// on clock granularity; an unreadable one has none, so on a
+				// filesystem with one-second stamps (ext3, HFS+ -- this suite
+				// already concedes they exist and skips a case for it) a
+				// dry-run that copied anyway within the same second moved
+				// nothing in the record at all. The size is free, it is
+				// already in hand from this stat, and it catches every rewrite
+				// that changes the length.
+				//
+				// What it does not catch, stated rather than glossed: a
+				// same-length rewrite of an unreadable file inside the stamp's
+				// granularity. That is a strictly smaller gap than the one the
+				// suite already accepts for readable files on such a
+				// filesystem, and closing it would mean reading bytes this
+				// process is not allowed to read.
 				if errors.Is(err, fs.ErrPermission) {
-					snapshot[relative] = fmt.Sprintf("file %04o @%d <unreadable>", info.Mode().Perm(), stamp)
+					snapshot[relative] = fmt.Sprintf("file %04o %dB @%d <unreadable>", info.Mode().Perm(), info.Size(), stamp)
 					return nil
 				}
 				return err
@@ -1358,9 +1389,28 @@ func (w *World) ExpectUnchanged(before Snapshot) {
 	// stat'd at all, which is what a 0400 (readable, not searchable) parent
 	// produces. The second is blind to more: nothing about the entry is known,
 	// so only its appearance or removal is still compared.
-	blindness := []struct{ marker, why string }{
-		{contentsUnreadable, "could not be listed, so this assertion is blind to a file rewritten in place inside it; make the fixture readable, or assert on what is in there directly"},
-		{entryUnstatable, "could not be examined at all -- its mode, type and modification time are all unknown -- so this assertion is blind to every change to it but its removal; make its parent directory searchable in the fixture"},
+	// Matched at a fixed end of the record, never with Contains. A regular
+	// file's record carries its %q-rendered CONTENT, so a Contains scan reads
+	// a fixture whose bytes happen to hold the marker text as a degraded
+	// record: the case fails with nothing changed and nothing blind, and the
+	// diagnostic tells the author to make a fixture readable that already is.
+	// Anchoring removes the ambiguity outright rather than making it
+	// unlikely. entryUnstatable REPLACES the record so it is a prefix;
+	// contentsUnreadable is appended so it is a suffix; and neither can be
+	// faked from the other side, because a file record ends in the closing
+	// quote of %q and begins with "file ".
+	//
+	// entryUnstatable is tested first because an entry can be both -- an
+	// unstatable directory that also cannot be listed records one then the
+	// other -- and its message is the stronger of the two.
+	blindness := []struct {
+		blind func(record string) bool
+		why   string
+	}{
+		{func(record string) bool { return strings.HasPrefix(record, entryUnstatable) },
+			"could not be examined at all -- its mode, type and modification time are all unknown -- so this assertion is blind to every change to it but its removal; make its parent directory searchable in the fixture"},
+		{func(record string) bool { return strings.HasSuffix(record, contentsUnreadable) },
+			"could not be listed, so this assertion is blind to a file rewritten in place inside it; make the fixture readable, or assert on what is in there directly"},
 	}
 	blind, seen := []string{}, map[string]bool{}
 	for _, snapshot := range []Snapshot{before, after} {
@@ -1369,7 +1419,7 @@ func (w *World) ExpectUnchanged(before Snapshot) {
 				continue
 			}
 			for _, shape := range blindness {
-				if strings.Contains(record, shape.marker) {
+				if shape.blind(record) {
 					seen[path] = true
 					blind = append(blind, path+" "+shape.why)
 					break
