@@ -89,14 +89,58 @@ func TestFromBuildInfoRejectsAVersionStampedFromAWorkingTree(t *testing.T) {
 	}
 }
 
-func TestAnExplicitStampOutranksAWorkingTreeBuild(t *testing.T) {
-	// `make build VERSION=x.y.z` stamps a release build that is otherwise made
-	// from a checkout; the stamp is the answer, not the pseudo-version.
-	original := value
-	t.Cleanup(func() { value = original })
+// withBuildInfo makes String() read the build info of a program this test is
+// not running, and restores both knobs afterwards.
+func withBuildInfo(t *testing.T, info *debug.BuildInfo) {
+	t.Helper()
+	originalValue, originalRead := value, readBuildInfo
+	t.Cleanup(func() { value, readBuildInfo = originalValue, originalRead })
+	readBuildInfo = func() (*debug.BuildInfo, bool) { return info, true }
+}
+
+func TestAnExplicitStampOutranksTheModulesOwnVersion(t *testing.T) {
+	// The only shape in which precedence is observable at all. A working-tree
+	// build yields "" from fromBuildInfo, so a stamp has nothing to outrank
+	// there and asserting on it proves nothing -- which is exactly what the
+	// case this replaces did, twice over: it stayed green both with the
+	// precedence inverted and with fromBuildInfo disconnected.
+	withBuildInfo(t, &debug.BuildInfo{Main: debug.Module{Version: "v0.9.0"}})
+
+	// Unstamped, the module's version is the answer. Without this the case
+	// could pass against build info that was never consulted.
+	value = ""
+	if got := String(); got != "0.9.0" {
+		t.Fatalf("String() = %q unstamped, want the module version %q; the assertion below would prove nothing", got, "0.9.0")
+	}
 
 	value = "v0.11.1"
 	if got := String(); got != "0.11.1" {
-		t.Errorf("String() = %q, want the stamped %q", got, "0.11.1")
+		t.Errorf("String() = %q, want the stamp %q to outrank the module version %q", got, "0.11.1", "0.9.0")
+	}
+}
+
+func TestAnExplicitStampSurvivesAWorkingTreeBuild(t *testing.T) {
+	// `make build VERSION=x.y.z` from a checkout: the build carries both the
+	// stamp and the VCS settings that make fromBuildInfo report nothing. The
+	// release number must still come out.
+	//
+	// The regression this guards is a plausible one: appspec/00 says an
+	// uninstalled tree reports "unknown", and reading that as a rule about
+	// the program rather than about the module's metadata puts a provenance
+	// check ahead of the stamp -- which would make every release build made
+	// from a checkout, which is how this project makes them, report unknown.
+	withBuildInfo(t, &debug.BuildInfo{
+		Main:     debug.Module{Version: "v0.0.0-20260902061304-da54d01d3c9b"},
+		Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "da54d01d3c9b"}},
+	})
+
+	value = ""
+	if got := String(); got != Fallback {
+		t.Fatalf("String() = %q for an unstamped working-tree build, want %q; the assertion below would prove nothing", got, Fallback)
+	}
+
+	value = "v0.11.1"
+	if got := String(); got != "0.11.1" {
+		t.Errorf("String() = %q, want the stamped %q even though the build came from a working tree", got, "0.11.1")
 	}
 }

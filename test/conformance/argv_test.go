@@ -192,9 +192,19 @@ func TestFormsMatchingNoUsageLineAreUsageErrors(t *testing.T) {
 		"unknown long option":             {"--nope", "list"},
 		"unknown short option":            {"-z", "list"},
 		"missing config-file argument":    {"list", "--config-file"},
-		"a bare dash is not a key":        {"show", "-"},
 		"a bare double dash is not a key": {"--", "list"},
 	}
+	// {"show", "-"} was here and is deliberately gone. appspec/02 never
+	// mentions a bare "-": its grammar is `show <application>`, which as a
+	// grammar accepts any token, and the spec's own parser-behavior section
+	// records reactions to a missing or duplicate positional and nothing
+	// about this one. This implementation rejects "-" as an unrecognized
+	// argument, so asserting a usage error here pinned the implementation
+	// rather than the contract -- and if "-" does bind as an application, the
+	// contract is the literal "Unsupported application: -" instead, which is
+	// the opposite answer on the same stream. Left unpinned until the ticket
+	// that adds application validation settles it against the reference:
+	// macklebox-invocation-0y1.
 	for name, args := range tests {
 		t.Run(name, func(t *testing.T) {
 			world := NewWorld(t)

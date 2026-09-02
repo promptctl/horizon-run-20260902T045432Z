@@ -23,12 +23,18 @@ const Fallback = "unknown"
 // When it is empty the version is recovered from the module build info.
 var value string
 
+// readBuildInfo is debug.ReadBuildInfo, indirected so that a test can supply
+// the build info of a program it is not running. Without it the precedence
+// below can only be checked against whatever this test binary happens to have
+// been built from, which is to say not checked at all.
+var readBuildInfo = debug.ReadBuildInfo
+
 // String returns the resolved version string.
 func String() string {
 	if value != "" {
 		return normalize(value)
 	}
-	if bi, ok := debug.ReadBuildInfo(); ok {
+	if bi, ok := readBuildInfo(); ok {
 		if v := fromBuildInfo(bi); v != "" {
 			return v
 		}

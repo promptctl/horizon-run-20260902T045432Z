@@ -28,6 +28,12 @@ jobs:
           # Track the toolchain go.mod declares rather than pinning a second
           # version here that can drift away from it.
           go-version-file: go.mod
+          # This module has no dependencies and so no go.sum, which is the
+          # only file setup-go keys its cache on. Left at its default the step
+          # logs "Restore cache failed: Dependencies file is not found" on
+          # every run and caches nothing, which reads like a broken cache
+          # rather than an absent one.
+          cache: false
 
       # vet, the unit tests, the black-box conformance suite, and the gofmt
       # check -- the same single gate a developer runs locally.

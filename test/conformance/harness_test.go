@@ -254,6 +254,15 @@ func readImplementationSources() {
 		// Never opened, for the same reason Snapshot does not open them: a
 		// FIFO with no writer blocks until the run is killed. Nothing here is
 		// worth hanging the suite over.
+		//
+		// This skips symlinks too, which reads like a hole in the cache key
+		// and is not one: entry.Info() lstats, and that stat is itself
+		// recorded, and cmd/go's hashStat runs both os.Stat and os.Lstat over
+		// a recorded name -- so the target's size and mtime land in the key
+		// through the link. Since hashOpen hashes the stat rather than the
+		// bytes, a recorded stat and a recorded open say the same thing about
+		// a file. Verified by linking a source into internal/ and editing the
+		// target: the cached pass was correctly refused.
 		if info, err := entry.Info(); err != nil || !info.Mode().IsRegular() {
 			return nil
 		}

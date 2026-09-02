@@ -25,8 +25,15 @@ build:
 # the conformance target for why. An empty package list would make `go test`
 # fall through to the current directory and report success having run nothing,
 # so the list is checked before it is used.
+#
+# go list runs on its own line because a pipeline reports the exit status of
+# its LAST command: written as `go list ./... | grep -v ...`, a go list that
+# failed was reported as grep's success. It can fail while still printing
+# packages -- an unresolvable import in one package exits 1 and lists the rest
+# -- which would have run `go test` over a silently short list.
 test:
-	@packages="$$(go list ./... | grep -v '/test/conformance$$')"; \
+	@all="$$(go list ./...)" || { echo "make: go list failed" >&2; exit 1; }; \
+		packages="$$(printf '%s\n' "$$all" | grep -v '/test/conformance$$')"; \
 		test -n "$$packages" || { echo "make: go list produced no packages" >&2; exit 1; }; \
 		go test $$packages
 	@$(MAKE) --no-print-directory conformance
