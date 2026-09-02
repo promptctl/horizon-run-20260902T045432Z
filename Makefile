@@ -64,12 +64,30 @@ vet:
 fmt:
 	gofmt -l -w ./cmd ./internal ./test
 
-# build is here because nothing else exercises it. The conformance suite builds
-# through this Makefile but always passes BINARY=<tmpdir>/..., so the default
-# output path -- the one every human and every release uses -- is never taken
-# by any check. That is not hypothetical: 6ac9abc on this branch fixed exactly
-# that, a release build the rig had broken while the whole gate stayed green.
-check: vet build test
+# build is deliberately NOT a prerequisite here, and the reasoning it replaces
+# is recorded because it was wrong twice over.
+#
+# The claim was that nothing else exercises the build recipe. The conformance
+# suite runs it on every case, twice: `make build BINARY=<tmpdir> VERSION=`
+# for the development binary and the same with VERSION=<n> for a release one,
+# so the recipe, both LDFLAGS branches and the -X symbol are all covered. The
+# only thing a default-path build adds is the literal value of BINARY.
+#
+# The claim's evidence was 6ac9abc, "a release build the rig had broken while
+# the whole gate stayed green". That commit changed no Makefile, and a build
+# prerequisite would not have caught its bug: restoring that bug (the inner
+# make no longer pinning VERSION, MAKEFLAGS left in the child environment) and
+# running `make check` WITH build as a prerequisite exits 0. What catches it is
+# the conformance suite under `make check VERSION=0.1.0`, which fails
+# TestVersionReportsTheFallbackTokenForAnUninstalledBuild. Both observed.
+#
+# Against that, the cost is real: BINARY defaults to bin/mackup and build is
+# .PHONY, so a gate that builds overwrites a stamped release artifact with an
+# unstamped one. Observed: `make build VERSION=9.9.9` reports Mackup 9.9.9,
+# and a `make check` after it reports Mackup unknown -- shipping the gate's
+# binary rather than the release. The default path is built in CI instead,
+# where the checkout is fresh and there is nothing to clobber.
+check: vet test
 	@test -z "$$(gofmt -l ./cmd ./internal ./test)" || { echo "gofmt needed:"; gofmt -l ./cmd ./internal ./test; exit 1; }
 
 clean:

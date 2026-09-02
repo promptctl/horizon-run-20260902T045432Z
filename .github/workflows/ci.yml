@@ -35,7 +35,13 @@ jobs:
           # rather than an absent one.
           cache: false
 
-      # vet, the default build, the unit tests, the black-box conformance
-      # suite, and the gofmt check -- the same single gate a developer runs
-      # locally.
+      # vet, the unit tests, the black-box conformance suite, and the gofmt
+      # check -- the same single gate a developer runs locally.
       - run: make check
+
+      # The default output path, which `make check` deliberately does not take:
+      # it is .PHONY and writes bin/mackup, so a gate that built would overwrite
+      # a maintainer's stamped release binary with an unstamped one. Here the
+      # checkout is fresh and there is nothing to clobber. Its own step, so a
+      # failure names the build rather than the gate.
+      - run: make build

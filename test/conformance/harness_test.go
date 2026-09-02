@@ -266,9 +266,19 @@ func readImplementationSources() {
 		if info, err := entry.Info(); err != nil || !info.Mode().IsRegular() {
 			return nil
 		}
-		if _, err := os.ReadFile(path); err != nil {
+		// Opened and closed rather than read: what reaches the cache key is
+		// the open, which cmd/go records by name, and hashOpen then folds in
+		// size, mode and mtime -- explicitly not the content. Reading the
+		// bytes buys nothing and costs the whole tree, which this walk covers
+		// on purpose: one large untracked file under the module root, a dump
+		// or a testdata blob a later ticket adds, would be read into memory on
+		// every run. Verified equivalent on the testlog: both spellings record
+		// the same "open" line for every file.
+		f, err := os.Open(path)
+		if err != nil {
 			return nil
 		}
+		f.Close()
 		if relative, err := filepath.Rel(root, path); err == nil {
 			read[relative] = true
 		}
