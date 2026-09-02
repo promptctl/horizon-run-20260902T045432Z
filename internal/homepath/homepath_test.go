@@ -4,7 +4,45 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/promptctl/macklebox/internal/fault"
 )
+
+func TestAnUnsetOrRelativeHomeIsRefusedInTheUnguardedRegime(t *testing.T) {
+	// appspec/03's environment table: HOME "must be set for the program to
+	// function; if unset, home-relative operations fail with an uncaught error
+	// (nonzero exit)". A relative value is refused in the same regime, because
+	// every path the program later resolves would otherwise depend on the
+	// working directory it was started in.
+	//
+	// The rule lives here rather than once per stage so that config load and
+	// database assembly cannot come to disagree about what a home directory is
+	// -- including about the sentence they print, which is the observable half.
+	for _, home := range []string{"", "relative/home", "~/still-relative"} {
+		got, err := Require(home)
+		if err == nil {
+			t.Errorf("Require(%q) returned %q; want a refusal", home, got)
+			continue
+		}
+		if regime, declared := fault.RegimeOf(err); !declared || regime != fault.Unguarded {
+			t.Errorf("Require(%q) failed as (%v, declared=%v), want the unguarded regime", home, regime, declared)
+		}
+	}
+}
+
+func TestAnAcceptedHomeIsCleaned(t *testing.T) {
+	// Every other rule in this package compares and joins against the returned
+	// string, and Inside decides containment lexically, so an uncleaned home
+	// would make a path plainly inside it compare as outside.
+	home := filepath.Join(string(filepath.Separator), "home", "user")
+	got, err := Require(home + string(filepath.Separator) + "." + string(filepath.Separator))
+	if err != nil {
+		t.Fatalf("Require of an absolute home failed: %v", err)
+	}
+	if got != home {
+		t.Errorf("Require returned %q, want the cleaned %q", got, home)
+	}
+}
 
 func TestATildeIsExpandedOnlyWhenItNamesTheHomeDirectory(t *testing.T) {
 	// appspec/03 specifies "~" and "~/..." and nothing else. "~otheruser/x" is

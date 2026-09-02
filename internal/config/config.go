@@ -180,7 +180,7 @@ func (c *Config) Scope(all []string) []string {
 // no third outcome: a partially-resolved config is exactly what appspec/03
 // says cannot exist.
 func Load(override Override, env Environment) (*Config, error) {
-	home, err := homeDirectory(env)
+	home, err := homepath.Require(env.Home)
 	if err != nil {
 		return nil, err
 	}
@@ -216,25 +216,6 @@ func Load(override Override, env Environment) (*Config, error) {
 		allow:     keySet(parsed.Section(syncSection)),
 		ignore:    keySet(parsed.Section(ignoreSection)),
 	}, nil
-}
-
-// homeDirectory returns the home directory every other path here is resolved
-// against.
-//
-// appspec/03: HOME "must be set for the program to function; if unset,
-// home-relative operations fail with an uncaught error (nonzero exit)" -- the
-// unguarded regime. A relative HOME is refused for the same reason and in the
-// same regime: it is not a home directory, and accepting one would make every
-// path the program later writes to depend on the working directory it happened
-// to be started in.
-func homeDirectory(env Environment) (string, error) {
-	if env.Home == "" {
-		return "", fault.Unguardedf("HOME is not set, so no home-relative path can be resolved")
-	}
-	if !filepath.IsAbs(env.Home) {
-		return "", fault.Unguardedf("HOME is %q, which is not an absolute path", env.Home)
-	}
-	return filepath.Clean(env.Home), nil
 }
 
 // configPath returns the config file to read: the explicitly named one, or the

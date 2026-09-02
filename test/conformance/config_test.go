@@ -294,6 +294,35 @@ func TestAConfigOutsideTheHomeDirectoryIsRefused(t *testing.T) {
 	world.ExpectUnchanged(before)
 }
 
+func TestAHomeThatIsNotAnAbsolutePathAbortsEveryCommand(t *testing.T) {
+	// appspec/03's environment table: HOME "must be set for the program to
+	// function; if unset, home-relative operations fail with an uncaught error
+	// (nonzero exit)" -- the unguarded regime, so the diagnostic names the
+	// offending value rather than reading as one of the spec's sentences. A
+	// relative value takes the same regime: it is not a home directory, and a
+	// program that accepted one would resolve every path it later writes
+	// against whatever directory it was started in.
+	//
+	// At the boundary because the rule has one implementation for two stages --
+	// config discovery and database assembly both resolve home through it -- so
+	// nothing but a run of the real program shows that the sentence a user sees
+	// is the same one for both.
+	for _, home := range []string{"", "relative/home"} {
+		world := NewWorld(t)
+		world.Setenv("HOME", home)
+		before := world.Snapshot()
+
+		result := world.Run("list").ExpectExit(1).ExpectSilentStdout()
+		if home == "" {
+			result.ExpectStderrLine("mackup: HOME is not set, so no home-relative path can be resolved")
+		} else {
+			result.ExpectStderrLine(`mackup: HOME is "relative/home", which is not an absolute path`)
+		}
+
+		world.ExpectUnchanged(before)
+	}
+}
+
 func TestADiscoveredConfigOutsideTheHomeDirectoryIsRefusedToo(t *testing.T) {
 	// appspec/03 makes the containment check independent of how the path was
 	// arrived at: "checked at construction independently of whether the file

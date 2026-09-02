@@ -183,7 +183,7 @@ func (d *Database) Files(key string) ([]string, bool) {
 // in the XDG directory that would be refused for an absolute path does not
 // refuse anything when ~/.mackup holds a file of the same name.
 func Assemble(env Environment) (*Database, error) {
-	home, err := homeDirectory(env)
+	home, err := homepath.Require(env.Home)
 	if err != nil {
 		return nil, err
 	}
@@ -212,25 +212,6 @@ func Assemble(env Environment) (*Database, error) {
 		apps[key] = app
 	}
 	return &Database{keys: keys, apps: apps}, nil
-}
-
-// homeDirectory returns the home directory every path in the database is
-// resolved against.
-//
-// appspec/03 makes HOME required "for the program to function" and puts its
-// absence in the unguarded regime; this stage cannot do anything home-relative
-// without it either. In the pipeline the condition is unreachable -- config load
-// is step 2 and refuses first -- and the guard is here anyway, because a package
-// whose correctness depends on the order its caller happens to run stages in has
-// no contract of its own to test.
-func homeDirectory(env Environment) (string, error) {
-	if env.Home == "" {
-		return "", fault.Unguardedf("HOME is not set, so no home-relative path can be resolved")
-	}
-	if !filepath.IsAbs(env.Home) {
-		return "", fault.Unguardedf("HOME is %q, which is not an absolute path", env.Home)
-	}
-	return filepath.Clean(env.Home), nil
 }
 
 // configBase resolves the XDG config directory and applies appspec/05's

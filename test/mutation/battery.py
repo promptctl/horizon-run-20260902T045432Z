@@ -49,7 +49,8 @@ FILES = ["test/conformance/harness_test.go", "test/conformance/argv_test.go",
          "internal/ui/color.go",
          "internal/config/config.go", "internal/storage/storage.go",
          "internal/fault/fault.go",
-         "internal/appdb/appdb.go", "internal/ini/ini.go"]
+         "internal/appdb/appdb.go", "internal/ini/ini.go",
+         "internal/homepath/homepath.go"]
 
 H = "test/conformance/harness_test.go"
 C = "internal/ui/color.go"
@@ -72,6 +73,7 @@ ST = "internal/storage/storage.go"
 FA = "internal/fault/fault.go"
 AD = "internal/appdb/appdb.go"
 IN = "internal/ini/ini.go"
+HP = "internal/homepath/homepath.go"
 
 # SURVIVES marks an entry that must NOT break the gate. Most entries are
 # defects the suite has to catch; these are the opposite -- correct code that a
@@ -547,6 +549,19 @@ MUTATIONS = [
  # internal/config alone and reports RIG-BLIND, accurately and uselessly. This
  # is the same call as the catalog deferral below, for the same reason. Add it
  # with .4, alongside the two catalog entries that banner names.
+
+ # appspec/03's environment table, and the one rule in this tree that TWO
+ # stages read from a single implementation: config discovery and database
+ # assembly both resolve home through homepath.Require. That is what makes the
+ # relative arm worth an entry of its own -- an absolute HOME is what every
+ # fixture and every developer machine has, so the arm is dead weight until
+ # something states it, and deleting it changes nothing a passing suite would
+ # notice unless a case supplies a relative one.
+ ("a relative HOME is accepted", [repl(HP,
+   '\tif !filepath.IsAbs(home) {\n'
+   '\t\treturn "", fault.Unguardedf("HOME is %q, which is not an absolute path", home)\n'
+   '\t}\n', '')],
+   "FAIL: TestAnUnsetOrRelativeHomeIsRefusedInTheUnguardedRegime"),
 
  # appspec/03 "Home-directory containment". Deleting the check is the shape a
  # reimplementation reaches for when the check looks like a redundant guard on

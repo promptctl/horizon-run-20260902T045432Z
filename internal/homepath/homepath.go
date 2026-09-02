@@ -18,13 +18,45 @@
 // Nothing here consults the environment or the filesystem. These are string
 // rules over paths a caller has already obtained, which is what lets both
 // packages state the environment a test case is about instead of mutating the
-// process's own.
+// process's own. Require is no exception: it is handed the value of $HOME, not
+// asked to go and read it.
+//
+// It does depend on internal/fault, because the failure regime and the wording
+// of a diagnostic travel with the rule that produces them. Two stages printing
+// two different sentences for one unset variable is the same divergence as two
+// stages disagreeing about a path, and appspec/03 states that failure once.
 package homepath
 
 import (
 	"path/filepath"
 	"strings"
+
+	"github.com/promptctl/macklebox/internal/fault"
 )
+
+// Require validates the home directory every other rule here resolves against,
+// returning it cleaned.
+//
+// appspec/03 makes $HOME required "for the program to function" and puts its
+// absence in the unguarded regime. A relative value is refused in the same
+// regime and for the same reason: it is not a home directory, and accepting one
+// would make every path the program later resolves depend on the working
+// directory it happened to be started in.
+//
+// Both the config load of appspec/03 and the database assembly of appspec/05
+// begin here. The second is unreachable in the pipeline -- config load is step 2
+// and refuses first -- and calls it anyway, because a package whose correctness
+// depends on the order its caller happens to run stages in has no contract of
+// its own to test.
+func Require(home string) (string, error) {
+	if home == "" {
+		return "", fault.Unguardedf("HOME is not set, so no home-relative path can be resolved")
+	}
+	if !filepath.IsAbs(home) {
+		return "", fault.Unguardedf("HOME is %q, which is not an absolute path", home)
+	}
+	return filepath.Clean(home), nil
+}
 
 // xdgConfigDefault is the XDG config base used when $XDG_CONFIG_HOME is unset,
 // written home-relative. appspec/03 and appspec/05 both give it: "$XDG_CONFIG_HOME
