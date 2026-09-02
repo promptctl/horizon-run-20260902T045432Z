@@ -108,8 +108,29 @@ test:
 # This flag only covers what runs through this recipe. Two other mechanisms
 # cover what does not, and the header of test/conformance/harness_test.go says
 # which is which. Never drop any of the three.
+#
+# Run twice, the second time under -trimpath, because the suite finds its own
+# files at runtime and -trimpath is what breaks that. moduleRoot says so in its
+# own comment -- "-trimpath rewrites the compiled-in file path to a
+# module-relative one" -- and that claim went unchecked until a case added
+# beside it used runtime.Caller anyway and shipped: `go test -trimpath` failed
+# with "open github.com/promptctl/macklebox/test/conformance: no such file or
+# directory", while this gate stayed green. An unenforced claim is decoration.
+#
+# It is a real invocation people make, not a hypothetical: -trimpath is the
+# standard flag for reproducible builds, and a machine carrying
+# GOFLAGS=-trimpath in its go env applies it to this recipe without anyone
+# typing it. That is the same go env file the forced-stamp GOFLAGS merge reads
+# from elsewhere on this branch.
+#
+# The whole suite, not a -run subset naming the cases that resolve paths
+# today. Narrowing a walk or a list to where the problem is believed to live is
+# the mistake this branch has now made in four separate places, and it costs
+# 1.7s warm -- measured against 1.7s for the plain run, not estimated -- so
+# there is nothing to buy by narrowing it.
 conformance:
 	go test -count=1 -tags conformance ./test/conformance/
+	go test -trimpath -count=1 -tags conformance ./test/conformance/
 
 # Tagged, so the conformance package is vetted too rather than skipped along
 # with the rest of the default build.

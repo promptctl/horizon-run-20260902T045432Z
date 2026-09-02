@@ -358,6 +358,27 @@ MUTATIONS = [
  ("the no-world scan sees a world in every case", [repl(G,
    'identifier.Name == "NewWorld"', 'identifier.Name != ""')],
    "no longer exists or now calls NewWorld"),
+
+ # Both of these are killed only by the SECOND conformance run, the -trimpath
+ # one. Under the plain run they pass, which is exactly how the guard's own
+ # runtime.Caller shipped: moduleRoot has refused runtime.Caller by name since
+ # before either entry existed, and nothing checked. The pair covers both
+ # sites, because the claim is about the suite finding its files, not about one
+ # function.
+ # Two edits each: the import as well as the body, because neither file
+ # imports runtime any more and a mutation that does not compile proves
+ # nothing (rule 1).
+ ("the no-world guard finds its directory by runtime.Caller", [
+   repl(G, '\t"path/filepath"\n', '\t"path/filepath"\n\t"runtime"\n'),
+   repl(G, '\tdir, err := os.Getwd()\n\tif err != nil {\n\t\tt.Fatalf("locating the package directory: %v", err)\n\t}',
+      '\t_, thisFile, _, _ := runtime.Caller(0)\n\tdir := filepath.Dir(thisFile)')],
+   "github.com/promptctl/macklebox/test/conformance"),
+
+ ("moduleRoot walks up from runtime.Caller", [
+   repl(H, '\t"path/filepath"\n', '\t"path/filepath"\n\t"runtime"\n'),
+   repl(H, '\tdir, err := os.Getwd()\n\tif err != nil {\n\t\treturn "", fmt.Errorf("locating the module root: %v", err)\n\t}',
+      '\t_, thisFile, _, _ := runtime.Caller(0)\n\tdir := filepath.Dir(thisFile)')],
+   "no go.mod above"),
 ]
 
 

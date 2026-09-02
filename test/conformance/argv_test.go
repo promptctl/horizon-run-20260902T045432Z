@@ -18,7 +18,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -811,8 +810,12 @@ func TestAssertionsOnAResultSurviveACapturedRegion(t *testing.T) {
 	}
 }
 
-// casesThatBuildNoWorld names every case in this package whose body never
-// mentions NewWorld, and why each is not a stale-pass hazard.
+// casesThatBuildNoWorld names every test entry point in this package whose
+// body never mentions NewWorld, and why each is not a stale-pass hazard.
+//
+// Entry point, not "function named Test...": Benchmark, Fuzz and Example
+// bodies run under the same cache and would be the same hazard. None exists
+// here today, which is why the list holds only cases.
 //
 // readImplementationSources is what ties a cached conformance result to the
 // program it was a result about, and NewWorld is its only caller, so a case
@@ -891,14 +894,20 @@ func TestEveryCaseThatBuildsNoWorldIsAccountedFor(t *testing.T) {
 	// the list itself platform-dependent, which is the shape the cross-GOOS
 	// vet target exists to catch elsewhere on this branch.
 	//
-	// The directory comes from runtime.Caller rather than moduleRoot plus a
-	// literal "test/conformance", so moving this package does not leave the
-	// case silently parsing nothing.
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller could not name this file, so there is no directory to parse")
+	// The directory is the working directory, which `go test` sets to the
+	// package's own source directory. Not a literal "test/conformance" under
+	// moduleRoot, so moving this package does not leave the case parsing a
+	// path that no longer holds it -- and not runtime.Caller, which was the
+	// first thing written here and was wrong for a reason moduleRoot spells
+	// out by name forty lines away: -trimpath rewrites the compiled-in path
+	// to a module-relative one, so `go test -trimpath` gave this case
+	// "github.com/promptctl/macklebox/test/conformance" to open. Anyone with
+	// GOFLAGS=-trimpath in their go env, which `make conformance` inherits,
+	// met it on the first run. Reproduced before this line was changed.
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("locating the package directory: %v", err)
 	}
-	dir := filepath.Dir(thisFile)
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -917,9 +926,18 @@ func TestEveryCaseThatBuildsNoWorldIsAccountedFor(t *testing.T) {
 			t.Fatalf("parsing %s: %v", path, err)
 		}
 		for _, declaration := range file.Decls {
+			// isTestEntryPoint, not a HasPrefix on "Test", which is what this
+			// was and which was wrong in both directions. It missed
+			// Benchmark, Fuzz and Example -- an ExampleList that observed the
+			// program without NewWorld was invisible to the guard, which is
+			// the whole hazard -- and it demanded an ordinary helper named
+			// TestingWorld into the allowlist, since "Test" is a prefix of it.
+			// The go tool's actual rule (a lower-case rune after the prefix
+			// is not an entry point) is already implemented once in this file
+			// for the doc guard; there is no second version of it.
 			function, isFunction := declaration.(*ast.FuncDecl)
-			if !isFunction || function.Recv != nil || function.Body == nil ||
-				!strings.HasPrefix(function.Name.Name, "Test") {
+			if !isFunction || function.Body == nil ||
+				!isTestEntryPoint(entry.Name(), declaration) {
 				continue
 			}
 			cases++
