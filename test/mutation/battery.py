@@ -1177,6 +1177,10 @@ MUTATIONS = [
  #       TestADeeplyNestedPropertyListIsRefusedRatherThanCrashing
  #   the binary nesting guard is removed          object's len(r.open) >= maxDepth deleted
  #       TestADeeplyNestedPropertyListIsRefusedRatherThanCrashing
+ #   the offset table start is unbounded          the fit check written as an addition
+ #       TestATrailerThatWrapsTheOffsetTableIsRefusedRatherThanCrashing
+ #   the value budget is removed                  object's r.budget check deleted
+ #       TestABinaryPropertyListThatSharesOneSubtreeManyTimesIsRefused
  #
  # One entry has no killing CASE and is listed with what it has, because the
  # alternative is to leave it out and let the next reader think it was missed:

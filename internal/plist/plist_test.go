@@ -298,6 +298,84 @@ func TestACorruptedBinaryPropertyListIsRefusedRatherThanCrashing(t *testing.T) {
 	}
 }
 
+func TestATrailerThatWrapsTheOffsetTableIsRefusedRatherThanCrashing(t *testing.T) {
+	// The offset table's start is eight bytes taken verbatim from the trailer,
+	// so a corrupt file can set it to the top of the uint64 range. Added to
+	// the table's length that wraps to a small number, which passes a
+	// does-it-fit check written as an addition and then slices the file from
+	// past its end to before it -- a panic, out of Parse and through Compare,
+	// which is the one outcome appspec/06 has no arm for.
+	//
+	// Built by hand rather than by corrupting the fixture, because
+	// single-byte corruption cannot reach it: the wrap needs the whole
+	// eight-byte field set, so the case above would report this as covered
+	// while never producing it.
+	wrapping := append([]byte("bplist00"), 0xA0)
+	trailer := make([]byte, trailerSize)
+	trailer[offsetSizeAt] = 1
+	trailer[refSizeAt] = 1
+	trailer[objectCountAt+7] = 1
+	for at := 0; at < 8; at++ {
+		trailer[offsetTableAt+at] = 0xFF
+	}
+	if value, err := Parse(append(wrapping, trailer...)); err == nil {
+		t.Errorf("an offset table at the top of the range parsed as %#v", value)
+	} else if !errors.Is(err, ErrNotAPlist) {
+		t.Errorf("Parse: %v, want an ErrNotAPlist", err)
+	}
+}
+
+func TestABinaryPropertyListThatSharesOneSubtreeManyTimesIsRefused(t *testing.T) {
+	// The other shape of the same failure as the cycle below, and the one the
+	// cycle guard cannot see: sharing rather than recursion. Every object here
+	// is reachable only from above, so nothing contains itself, and forty
+	// levels is well inside maxDepth -- but each array names the next one
+	// TWICE, so the tree it expands to doubles per level. 198 bytes, 2^39
+	// values, and a reader bounded only by depth and cycles never returns.
+	//
+	// Refusal, not a slow success: the budget is what makes it terminate, and
+	// a document that large has no readable diff anyway, so appspec/06's
+	// byte-for-byte arm is where it belongs.
+	const levels = 40
+	var objects []byte
+	offsets := make([]int, levels)
+	for i := 0; i < levels; i++ {
+		offsets[i] = len(binaryMagic) + len(objects)
+		if i == levels-1 {
+			objects = append(objects, 0xA0)
+			break
+		}
+		objects = append(objects, 0xA2, byte(i+1), byte(i+1))
+	}
+	sharing := append([]byte(nil), binaryMagic...)
+	sharing = append(sharing, objects...)
+	table := len(sharing)
+	for _, offset := range offsets {
+		sharing = append(sharing, byte(offset))
+	}
+	trailer := make([]byte, trailerSize)
+	trailer[offsetSizeAt] = 1
+	trailer[refSizeAt] = 1
+	trailer[objectCountAt+7] = byte(levels)
+	trailer[offsetTableAt+7] = byte(table)
+	sharing = append(sharing, trailer...)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if value, err := Parse(sharing); err == nil {
+			t.Errorf("a doubling reference graph parsed as %#v", value)
+		} else if !errors.Is(err, ErrNotAPlist) {
+			t.Errorf("Parse: %v, want an ErrNotAPlist", err)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Parse did not return on a doubling reference graph")
+	}
+}
+
 func TestABinaryPropertyListThatContainsItselfIsRefused(t *testing.T) {
 	// The format stores containers as references into one flat table, so
 	// nothing in it prevents an object from referring to itself. Without the

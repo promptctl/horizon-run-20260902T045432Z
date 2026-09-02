@@ -68,10 +68,22 @@ func parseBinary(data []byte) (any, error) {
 	if objectCount == 0 || objectCount > uint64(len(data)) {
 		return nil, notAPlist("binary property list declares %d objects in %d bytes", objectCount, len(data))
 	}
-	end := offsetTable + objectCount*uint64(offsetSize)
-	if offsetTable < uint64(len(binaryMagic)) || end > uint64(len(data)-trailerSize) {
+	// The table's start is bounded on its own, and from both sides, before it
+	// is added to anything. offsetTable is eight bytes taken verbatim from the
+	// trailer, so a corrupt file can set it to the top of the range, and
+	// `offsetTable + length > room` would then wrap to a small number and pass
+	// a check it fails -- a slice expression with a start past its end, which
+	// panics rather than returning. The length is subtracted from the room
+	// that is left instead, which cannot wrap: objects is at most
+	// len(data)-trailerSize by the line above.
+	objects := uint64(len(data) - trailerSize)
+	if offsetTable < uint64(len(binaryMagic)) || offsetTable > objects {
+		return nil, notAPlist("binary property list's offset table starts at %d, outside a %d-byte file", offsetTable, len(data))
+	}
+	if objectCount*uint64(offsetSize) > objects-offsetTable {
 		return nil, notAPlist("binary property list's offset table does not fit in the file")
 	}
+	end := offsetTable + objectCount*uint64(offsetSize)
 	if topObject >= objectCount {
 		return nil, notAPlist("binary property list's top object is #%d of %d", topObject, objectCount)
 	}
@@ -83,9 +95,35 @@ func parseBinary(data []byte) (any, error) {
 		refSize:     refSize,
 		count:       int(objectCount),
 		open:        map[int]bool{},
+		budget:      maxValues,
 	}
 	return reader.object(int(topObject))
 }
+
+// maxValues bounds how many values one binary property list may expand to.
+//
+// The depth guard is not enough on its own, because the blow-up this format
+// allows is not depth. The object table is flat and a reference may name any
+// entry, so one object can be referenced from several places at once; that is
+// not a cycle and it is not deep, and the tree it expands to is the PRODUCT of
+// the sharing rather than the sum. Forty two-element arrays, each pointing
+// twice at the next, are 198 bytes that expand to 2^39 values -- a sync run
+// that never returns, waiting at a prompt.
+//
+// Bounding the count of values resolved bounds both halves of that: the work
+// this reader does, and the size of the tree Format then walks to produce the
+// diff. It has to be one bound rather than two, because a reader that returned
+// the shared graph quickly would move the same hang into the renderer, which
+// visits a shared subtree once per reference.
+//
+// Deliberately a constant rather than something scaled to the file's length.
+// CoreFoundation uniques equal objects as it writes, so a file legitimately
+// holding a thousand references to one shared dictionary expands to far more
+// values than it has bytes, and a length-relative budget would refuse real
+// preference files. This is three orders of magnitude above what one holds,
+// and a document past it falls through to appspec/06's byte-for-byte arm --
+// which is the honest answer for a structure no one would read a diff of.
+const maxValues = 1 << 20
 
 // A binaryReader resolves object references against one file's object table.
 type binaryReader struct {
@@ -100,6 +138,10 @@ type binaryReader struct {
 	// recursion below would otherwise not terminate -- a hang inside a sync
 	// run, which is worse than either of appspec/06's outcomes.
 	open map[int]bool
+	// budget is how many more values this document may expand to; see
+	// maxValues. Spent per resolved object rather than per table entry,
+	// because it is the expansion that is bounded, not the table.
+	budget int
 }
 
 // offsetOf returns the byte offset of object ref within the file.
@@ -128,6 +170,9 @@ func (r *binaryReader) object(ref int) (any, error) {
 	// size is the nesting depth and no separate counter is needed.
 	if len(r.open) >= maxDepth {
 		return nil, notAPlist("property list nests more than %d deep", maxDepth)
+	}
+	if r.budget--; r.budget < 0 {
+		return nil, notAPlist("property list expands to more than %d values", maxValues)
 	}
 	offset, err := r.offsetOf(ref)
 	if err != nil {
