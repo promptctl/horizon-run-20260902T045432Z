@@ -32,7 +32,7 @@ one, and restores in a finally, so an interrupt or an exception puts the
 sources back rather than leaving a mutation in the tree.
 """
 
-import atexit, os, shutil, subprocess, sys, tempfile
+import atexit, os, shutil, signal, subprocess, sys, tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BACKUP = tempfile.mkdtemp(prefix="macklebox-mutation-backup-")
@@ -316,6 +316,38 @@ MUTATIONS = [
  ("the version banner gains a suffix", [repl(V,
    'return "Mackup " + String()', 'return "Mackup " + String() + "-extra"')],
    None),
+
+ # The two halves of runningUnderCI, separately. Before it existed this was two
+ # inline switches over the raw string, so CI=False and CI=no hard-failed the
+ # gate the "false" case had been added to keep green -- a defect that lived in
+ # code nothing drove, since neither switch is reachable on a machine that has
+ # a VCS-stamped build. Narrowing either half must now be caught.
+ ("runningUnderCI stops normalizing its value", [repl(H,
+   "strings.ToLower(strings.TrimSpace(value))", "value")],
+   "was read as a CI run"),
+
+ ("runningUnderCI narrows its falsy set", [repl(H,
+   '\tcase "", "false", "0", "no", "off":', '\tcase "", "false", "0":')],
+   "was read as a CI run"),
+
+ # casesThatBuildNoWorld replaced a comment that named which cases skip
+ # readImplementationSources, and went stale twice doing it. Both directions of
+ # the guard that replaced it are pinned, because a list that only rejects
+ # additions rots the same way the comment did.
+ # The key is renamed rather than the line deleted, deliberately: gofmt pads
+ # the map's keys to align its values, so an anchor carrying that padding
+ # breaks -- loudly, but for a reason having nothing to do with what the entry
+ # tests -- the next time an entry is added. A key substring carries no
+ # padding. Renaming trips both directions at once; the expected diagnostic
+ # names the one this entry is for.
+ ("the no-world allowlist loses an entry", [repl(G,
+   '"TestTheReaperJudgesTheEntryItRemoves":',
+   '"TestTheReaperJudgesTheEntryItRemovedOnce":')],
+   "never calls NewWorld"),
+
+ ("the no-world scan sees a world in every case", [repl(G,
+   'identifier.Name == "NewWorld"', 'identifier.Name != ""')],
+   "no longer exists or now calls NewWorld"),
 ]
 
 
@@ -342,15 +374,41 @@ def restore():
 RUN_BOUND = 900
 
 def run(cmd):
+    # start_new_session puts the shell and everything it spawns in their own
+    # process group, so the timeout below can kill the whole tree.
+    #
+    # subprocess.run's timeout kills only the direct child -- /bin/sh -- and
+    # cmd here is a make invocation, so the surviving descendants are `go build`
+    # and a running test binary. They kept compiling sources that the next
+    # entry was already rewriting underneath them: a phantom DOES-NOT-COMPILE,
+    # or a kill credited to a mutation that was never in the tree when the
+    # compiler read it. That is the same misattribution the tail and cut guards
+    # exist to prevent, arriving by a different road. Orphans also strand
+    # macklebox-conformance-bin-* directories that only the harness's one-hour
+    # reaper reclaims.
+    #
+    # Popen rather than subprocess.run because start_new_session plus a
+    # killpg needs the pid, and subprocess.run does not hand it out.
+    p = subprocess.Popen(cmd, shell=True, cwd=REPO, text=True,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         start_new_session=True)
     try:
-        p = subprocess.run(cmd, shell=True, cwd=REPO, capture_output=True, text=True,
-                           timeout=RUN_BOUND)
-    except subprocess.TimeoutExpired as expired:
-        out = (expired.stdout or b"") if isinstance(expired.stdout, bytes) else (expired.stdout or "")
-        if isinstance(out, bytes):
-            out = out.decode("utf-8", "replace")
-        return 124, out + "\nbattery: %r did not finish within %ds" % (cmd, RUN_BOUND)
-    return p.returncode, p.stdout + p.stderr
+        out, err = p.communicate(timeout=RUN_BOUND)
+        return p.returncode, out + err
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            # The group is already gone: the shell exited between the timeout
+            # firing and this call. Nothing to kill, and the communicate below
+            # still collects what was written.
+            p.kill()
+        # Reachable only because the group is dead: every writer of these pipes
+        # was in it, so the reads see EOF rather than blocking on a descendant
+        # that outlived the shell -- which is the deadlock the unkilled version
+        # would have had here.
+        out, err = p.communicate()
+        return 124, (out or "") + (err or "") + "\nbattery: %r did not finish within %ds" % (cmd, RUN_BOUND)
 
 def apply(edits):
     touched = set()

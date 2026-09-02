@@ -18,6 +18,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -807,6 +808,164 @@ func TestAssertionsOnAResultSurviveACapturedRegion(t *testing.T) {
 	reported := world.captureReport(t, func() { got.ExpectExit(99) })
 	if len(reported) == 0 {
 		t.Error("an assertion on a Result produced inside a captured region reported nothing; the Result is still reporting into the recorder that region used, so every assertion made on it is silently discarded")
+	}
+}
+
+// casesThatBuildNoWorld names every case in this package whose body never
+// mentions NewWorld, and why each is not a stale-pass hazard.
+//
+// readImplementationSources is what ties a cached conformance result to the
+// program it was a result about, and NewWorld is its only caller, so a case
+// that builds no world runs with that walk unexecuted. Running such a case
+// alone -- `go test -tags conformance -run TestTheReaperJudgesTheEntryItRemoves
+// ./test/conformance/` -- records no read of cmd/ or internal/ at all. That is
+// harmless for every entry below and would not be for a case that observed the
+// program, so the set is declared rather than described.
+//
+// It is declared because describing it failed twice. The comment on
+// readImplementationSources named two such cases; five more were added in the
+// rounds after it and the sentence went on naming two, and it had already been
+// corrected once before that. An unenforced claim about which cases exist is
+// decoration.
+var casesThatBuildNoWorld = map[string]string{
+	"TestMain": "not a case: it is the entry point, and calling the walk from here is the defect the flag.Parsed tripwire panics on, because cmd/go is not yet listening",
+
+	"TestTheReaperJudgesTheEntryItRemoves":                             "exercises this package's own reaper against directories it creates itself; observes no program",
+	"TestTheReaperFindsDirectoriesUnderAPathHoldingAGlobMetacharacter": "same reaper, same reason",
+	"TestARefreshedBuildDirectoryOutlivesTheReaper":                    "exercises this package's own build-directory refresher against the reaper; observes no program",
+	"TestTheSuiteRefreshesItsOwnBuildDirectory":                        "same refresher, same reason",
+	"TestTheBuildDirectoryRefresherKeepsTouching":                      "same refresher, same reason",
+	"TestTheForcedStampGOFLAGSKeepsWhatGoEnvAlreadyCarries":            "exercises this package's own GOFLAGS merge by asking `go env`; observes no program",
+	"TestTheCIEscalationReadsEverySpellingOfFalse":                     "exercises this package's own runningUnderCI over literal strings; observes no program",
+	"TestEveryCaseThatBuildsNoWorldIsAccountedFor":                     "parses this package's own test files; observes no program",
+
+	// The one entry whose reason is not "observes no program". It reads every
+	// .go file under the module root, cmd/ and internal/ included -- so the
+	// blanket sentence this list replaces, which asserted over two entries
+	// that "neither observes the program", was false of the set it was
+	// standing in for even as written.
+	//
+	// It is still not a stale-pass hazard, for a different reason that was
+	// nowhere in this file: it opens those files itself, through
+	// parser.ParseFile, and cmd/go records the reads a test binary makes
+	// whoever makes them. Running it alone therefore folds the program's
+	// sources into the cache key exactly as readImplementationSources would.
+	// Weaker than that walk, since it reads only .go files and skips
+	// testdata, vendor and dot/underscore trees -- an edit to appspec/05's
+	// .cfg fixtures would not invalidate a cached run of this case alone --
+	// but it asserts nothing about the program either, so there is no
+	// observation of the program to go stale.
+	"TestEveryDocCommentNamesWhatItDocuments": "reads cmd/ and internal/ sources itself via parser.ParseFile, so cmd/go records those reads and the cache key tracks the program even without the walk; asserts nothing about the program in any case",
+}
+
+func TestEveryCaseThatBuildsNoWorldIsAccountedFor(t *testing.T) {
+	// The hazard readImplementationSources cannot see: a case that observes
+	// the program without going through NewWorld, and so asserts on a program
+	// whose sources never entered the cache key. Its comment says "there is
+	// none; do not write one", and until now nothing checked.
+	//
+	// Both directions are checked, because a list that only rejects additions
+	// rots the other way -- an entry for a case that was renamed, deleted or
+	// has since grown a world reads as documentation of a case that no longer
+	// exists, which is the failure this case was written to end.
+	//
+	// Detection is syntactic: does the function body mention the identifier
+	// NewWorld. A case reaching a world through some future helper would be
+	// flagged despite being safe, and the fix then is an allowlist entry
+	// saying so -- a loud false positive that costs one line, against a silent
+	// gap. Identifiers only, so NewWorld inside a comment or a string does not
+	// count.
+	//
+	// Every _test.go file in the directory is parsed, build tags ignored, so
+	// this case sees the same set on every GOOS. harness_unix_test.go's cases
+	// do not compile on Windows; leaving them out of the list there would make
+	// the list itself platform-dependent, which is the shape the cross-GOOS
+	// vet target exists to catch elsewhere on this branch.
+	//
+	// The directory comes from runtime.Caller rather than moduleRoot plus a
+	// literal "test/conformance", so moving this package does not leave the
+	// case silently parsing nothing.
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller could not name this file, so there is no directory to parse")
+	}
+	dir := filepath.Dir(thisFile)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", dir, err)
+	}
+
+	found := map[string]bool{}
+	cases := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", path, err)
+		}
+		for _, declaration := range file.Decls {
+			function, isFunction := declaration.(*ast.FuncDecl)
+			if !isFunction || function.Recv != nil || function.Body == nil ||
+				!strings.HasPrefix(function.Name.Name, "Test") {
+				continue
+			}
+			cases++
+			buildsWorld := false
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				if identifier, isIdentifier := node.(*ast.Ident); isIdentifier && identifier.Name == "NewWorld" {
+					buildsWorld = true
+				}
+				return !buildsWorld
+			})
+			if buildsWorld {
+				continue
+			}
+			found[function.Name.Name] = true
+			if _, listed := casesThatBuildNoWorld[function.Name.Name]; !listed {
+				t.Errorf("%s: %s never calls NewWorld, so running it alone leaves readImplementationSources unexecuted and its result outside the program's cache key. If it observes the program, route it through NewWorld. If it does not, add it to casesThatBuildNoWorld with the reason.", entry.Name(), function.Name.Name)
+			}
+		}
+	}
+
+	// A parse that reached no case at all would pass the loop above
+	// vacuously, which is the same silent-success shape readImplementationSources
+	// panics over.
+	if cases == 0 {
+		t.Fatalf("no test functions were found under %s, so this case checked nothing", dir)
+	}
+
+	for name := range casesThatBuildNoWorld {
+		if !found[name] {
+			t.Errorf("casesThatBuildNoWorld lists %s, which either no longer exists or now calls NewWorld; remove the entry", name)
+		}
+	}
+}
+
+func TestTheCIEscalationReadsEverySpellingOfFalse(t *testing.T) {
+	// requireVCSStampedBuild fatals under CI and skips elsewhere, so what
+	// counts as "under CI" decides whether a developer with no VCS-stamped
+	// build gets a skip or a red `make check`. This was two inline switches
+	// comparing the raw variable against "", "false" and "0"; CI=False and
+	// CI=FALSE took the default and failed the gate, which is precisely what
+	// the "false" case had been added to prevent. The falsy set is pinned
+	// here rather than left to the two call sites to agree about.
+	//
+	// The truthy half is pinned too, and is the half worth keeping honest:
+	// a helper that grew lenient enough to read "true" as not-CI would turn
+	// the escalation off everywhere and nothing else would notice.
+	for _, value := range []string{"", "false", "False", "FALSE", "0", "no", "off", " false ", "\tFALSE\n"} {
+		if runningUnderCI(value) {
+			t.Errorf("CI=%q was read as a CI run, so a developer with no VCS-stamped build would get a failed gate instead of a skip", value)
+		}
+	}
+	for _, value := range []string{"true", "True", "TRUE", "1", "yes", "on", "github-actions"} {
+		if !runningUnderCI(value) {
+			t.Errorf("CI=%q was read as a developer machine, so a CI run missing its VCS-stamped build would skip silently instead of failing", value)
+		}
 	}
 }
 

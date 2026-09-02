@@ -9,10 +9,15 @@
 //   - readImplementationSources, below, makes the cache honest: cmd/go records
 //     the files a test binary opens and folds them into the cache key, so an
 //     edit to the program invalidates the cached result. This is the part
-//     that holds under any invocation that runs a case -- any tags, any tool,
-//     no flags of ours required. It is stat-based, not content-based, and
-//     the limit that follows from that is spelled out on
-//     readImplementationSources.
+//     that holds under any invocation that runs a case which observes the
+//     program -- any tags, any tool, no flags of ours required. The
+//     qualifier is load-bearing: NewWorld is this walk's only caller, so a
+//     -run filter selecting only cases that build no world leaves it
+//     unexecuted. Which cases those are, and why none of them is a stale-pass
+//     hazard, is declared and enforced in casesThatBuildNoWorld rather than
+//     described here, because described here it went stale twice. It is
+//     stat-based, not content-based, and the limit that follows from that is
+//     spelled out on readImplementationSources.
 //   - The `conformance` build tag keeps the package out of untagged builds, so
 //     a plain `go test ./...` does not report on it at all rather than
 //     reporting something stale.
@@ -221,15 +226,23 @@ var (
 // The residual gap is a run that never reaches NewWorld, which is this walk's
 // only caller. A -run filter selecting no case is the obvious shape, and it
 // asserts nothing either, so there is no pass to go stale. The less obvious
-// shape is a filter selecting only cases that build no world:
-// TestTheReaperJudgesTheEntryItRemoves and
-// TestTheReaperFindsDirectoriesUnderAPathHoldingAGlobMetacharacter are both
-// like that today, and running either alone leaves this walk unexecuted --
-// verified, against the earlier claim here that a no-case filter was the whole
-// of it. Neither is a stale-pass hazard, because neither observes the program:
-// they exercise this package's own code, which cmd/go already folds into the
-// test binary's build ID. What WOULD be one is a case that observes the
-// program without going through NewWorld. There is none; do not write one.
+// shape is a filter selecting only cases that build no world, which leaves
+// this walk unexecuted -- verified, against the earlier claim here that a
+// no-case filter was the whole of it. What WOULD be a stale-pass hazard is a
+// case that observes the program without going through NewWorld. There is
+// none; do not write one.
+//
+// That last sentence is no longer left to a comment to be right about. This
+// paragraph used to name the two such cases that existed and say why neither
+// observed the program; five more were added in the rounds after, the sentence
+// went on naming two, and it had already been corrected once before that. The
+// set is now declared and enforced in casesThatBuildNoWorld and
+// TestEveryCaseThatBuildsNoWorldIsAccountedFor, one reason per entry, failing
+// both on an unlisted case and on a listed one that has gone away. Read the
+// list, not this paragraph, for which cases those are -- and note that one of
+// them does read cmd/ and internal/, so the blanket claim made here before
+// ("neither observes the program") was not even true of the set it stood for.
+//
 // Moving this call back out of a case is the failure that matters, and
 // the flag.Parsed check below is a tripwire for exactly that: flags are still
 // unparsed before m.Run, so a caller that runs too early to be recorded
@@ -546,17 +559,39 @@ func requireVCSStampedBuild(t *testing.T) string {
 		return mackupVCSBin
 	}
 	why := fmt.Sprintf("no VCS-stamped build is available, so the pseudo-version half of the provenance contract cannot be exercised here: %v", mackupVCSBuildErr)
-	// CI=false and CI=0 are both things people export deliberately; neither
-	// means "running under CI", and treating them as such would turn a skip
-	// this code chose to tolerate into a failed `make check` on a developer's
-	// own machine.
-	switch os.Getenv("CI") {
-	case "", "false", "0":
-	default:
+	if runningUnderCI(os.Getenv("CI")) {
 		t.Fatal(why)
 	}
 	t.Skip(why)
 	return ""
+}
+
+// runningUnderCI reports whether value -- the CI environment variable -- means
+// this run is a CI run.
+//
+// The value is passed in rather than read here so that a case can drive every
+// spelling; the two callers pass os.Getenv("CI").
+//
+// The falsy set is the point. CI=false and CI=0 are both things people export
+// deliberately, neither means "running under CI", and treating either as such
+// turns a skip this code chose to tolerate into a failed `make check` on a
+// developer's own machine. That was already the intent when this was two
+// inline switches -- but they compared the raw string against exactly "",
+// "false" and "0", so CI=False, CI=FALSE, CI=no and CI=off all fell to the
+// default and hard-failed the gate they were written to keep green. Lowercased
+// and trimmed here, with "no" and "off" added, because those are the spellings
+// people actually export.
+//
+// Anything else is CI, the empty-but-set case included in the falsy list
+// above: an unset variable and CI= are indistinguishable through Getenv, and
+// the safe reading of "set to nothing" is the developer one, since CI systems
+// that set it at all set it to a truthy word.
+func runningUnderCI(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "false", "0", "no", "off":
+		return false
+	}
+	return true
 }
 
 // requireStampedVCSBuild returns the release binary that also carries a VCS
@@ -568,9 +603,7 @@ func requireStampedVCSBuild(t *testing.T) string {
 		return mackupStampedVCSBin
 	}
 	why := fmt.Sprintf("no VCS-stamped release build is available, so the rule that a linker stamp outranks working-tree provenance cannot be exercised here: %v", mackupStampedVCSBuildErr)
-	switch os.Getenv("CI") {
-	case "", "false", "0":
-	default:
+	if runningUnderCI(os.Getenv("CI")) {
 		t.Fatal(why)
 	}
 	t.Skip(why)
