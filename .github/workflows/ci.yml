@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# The job builds and runs code from the branch under review -- Makefile
+# recipes and test code that itself shells out -- so it gets the least token
+# the work needs, rather than whatever the repository default happens to be.
+permissions:
+  contents: read
+
+# A superseded commit's run is not worth paying for, but every commit on master
+# must keep its own result: that run is the record of whether the branch is
+# green at that commit.
+#
+# cancel-in-progress: false alone does not give that, which is what this said
+# first. GitHub's concurrency rule is that "any existing pending job or workflow
+# in the same concurrency group will be canceled and the new queued job or
+# workflow will take its place" -- pending, not in progress, so the flag does
+# not reach it. Three commits landing on master inside a few minutes would
+# leave the middle one with no CI result at all: run 1 in progress, run 2
+# pending, run 3 arrives and takes run 2's place. Sharing a group also
+# serialises master runs behind each other for no benefit.
+#
+# So master commits do not share a group. Every other ref keeps one group per
+# ref, where superseding is the point.
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.ref == 'refs/heads/master' && github.sha || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          # Track the toolchain go.mod declares rather than pinning a second
+          # version here that can drift away from it.
+          go-version-file: go.mod
+          # setup-go@v5 keys its cache on go.sum, and this module has no
+          # dependencies and so no go.sum: left at its default the step warns
+          # "Restore cache failed: Dependencies file is not found" and caches
+          # nothing. Pointing it at go.mod is what fixes that -- the input is
+          # used verbatim, so any file that hashes will do.
+          #
+          # Turning the cache off instead, which this did first, reasoned only
+          # about dependencies and threw away the half that matters here.
+          # setup-go caches `go env GOCACHE` as well as `go env GOMODCACHE`,
+          # and for a module with no dependencies the build cache is the whole
+          # benefit.
+          #
+          # What it buys is the compiled standard library, and only that. The
+          # key is a hash of the file named here with no restore-keys, and the
+          # post-job step returns early -- "Cache hit occurred on the primary
+          # key, not saving cache" -- whenever the restore matched, so the
+          # cache is written once and then frozen until go.mod or the Go
+          # version changes. Stdlib objects stay valid across runs and are the
+          # bulk of a cold compile; this project's own package objects go
+          # stale after the first commit and are recompiled every run. Earning
+          # those back would mean a key with a varying suffix plus
+          # restore-keys, which setup-go does not expose -- it would take a
+          # separate actions/cache step, for a module whose own packages
+          # compile in about a second. Not worth it; the claim is narrowed
+          # instead.
+          #
+          # A stale entry cannot corrupt a result: the build cache is
+          # content-addressed, and the one place a restored cache could serve
+          # a stale PASS, the conformance suite, is pinned by -count=1 in the
+          # Makefile for reasons recorded there.
+          cache-dependency-path: go.mod
+
+      # vet, the unit tests, the black-box conformance suite, and the gofmt
+      # check -- the same single gate a developer runs locally.
+      - run: make check
+
+      # The mutation battery's anchors, resolved against this commit. Its own
+      # step and not part of `make check`, for the reason the anchors target
+      # records: the battery runs `make check` over a mutated tree, and 7 of its
+      # 52 entries rewrite a line another entry anchors on, so a step inside the
+      # gate would turn a SURVIVED into a phantom kill. Here it costs a second
+      # and catches the breakage on the push that caused it, rather than an hour
+      # into the next full run.
+      - run: make anchors
+
+      # The default output path, which `make check` deliberately does not take:
+      # it is .PHONY and writes bin/mackup, so a gate that built would overwrite
+      # a maintainer's stamped release binary with an unstamped one. Here the
+      # checkout is fresh and there is nothing to clobber. Its own step, so a
+      # failure names the build rather than the gate.
+      - run: make build
