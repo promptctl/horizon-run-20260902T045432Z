@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# A superseded commit's run is not worth paying for, but never cancel a run on
+# master: that one is the record of whether the branch is green.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          # Track the toolchain go.mod declares rather than pinning a second
+          # version here that can drift away from it.
+          go-version-file: go.mod
+
+      # vet, the unit tests, the black-box conformance suite, and the gofmt
+      # check -- the same single gate a developer runs locally.
+      - run: make check

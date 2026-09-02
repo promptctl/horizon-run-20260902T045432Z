@@ -17,7 +17,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -27,6 +26,15 @@ import (
 // deliberately not a plausible release number: a test asserting on it should
 // be obviously reading the build's stamp, not a hardcoded product version.
 const stampedVersion = "0.0.0-conformance"
+
+// usageMarker is how THIS implementation opens its usage block. appspec/02
+// says the exact wording of usage, help, and parser-warning text is
+// human-facing and not a machine-read contract, so this token is not spec: it
+// is the one place the suite is allowed to know it, so that rewording the help
+// text is a one-line change here rather than an edit across every case. A case
+// that means "the parser rejected this" says so with usageMarker; a case that
+// means "the program did the thing" must assert the thing, never this.
+const usageMarker = "Usage:"
 
 // The two binaries under test. appspec/00-overview.md "Provenance" makes both
 // halves of the version contract observable, so the suite builds both: the
@@ -43,19 +51,27 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "conformance: %v\n", err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(dir)
+	// os.Exit does not run deferred functions, so the removal is spelled out
+	// at every exit below rather than deferred; otherwise each run leaks two
+	// binaries of a couple of megabytes into the temporary directory.
+	fail := func(err error) {
+		fmt.Fprintf(os.Stderr, "conformance: %v\n", err)
+		os.RemoveAll(dir)
+		os.Exit(1)
+	}
 
 	mackupBin = filepath.Join(dir, "mackup")
 	mackupStampedBin = filepath.Join(dir, "mackup-stamped")
 	if err := build(mackupBin, ""); err != nil {
-		fmt.Fprintf(os.Stderr, "conformance: %v\n", err)
-		os.Exit(1)
+		fail(err)
 	}
 	if err := build(mackupStampedBin, stampedVersion); err != nil {
-		fmt.Fprintf(os.Stderr, "conformance: %v\n", err)
-		os.Exit(1)
+		fail(err)
 	}
-	os.Exit(m.Run())
+
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
 }
 
 func build(out, version string) error {
@@ -65,21 +81,41 @@ func build(out, version string) error {
 	}
 	args = append(args, "./cmd/mackup")
 
+	root, err := moduleRoot()
+	if err != nil {
+		return err
+	}
+
 	cmd := exec.Command("go", args...)
-	cmd.Dir = moduleRoot()
+	cmd.Dir = root
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("building %s: %v\n%s", out, err, output)
 	}
 	return nil
 }
 
-// moduleRoot is the repository root, two directories up from this file.
-func moduleRoot() string {
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		panic("conformance: cannot locate the module root")
+// moduleRoot is the directory holding go.mod, found by walking up from the
+// working directory -- which `go test` sets to the package's source directory.
+//
+// Deliberately not runtime.Caller: -trimpath rewrites the compiled-in file
+// path to a module-relative one, so a moduleRoot built from it points at a
+// directory that does not exist and `go test -trimpath ./test/conformance/`
+// loses the entire suite in TestMain.
+func moduleRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("locating the module root: %v", err)
 	}
-	return filepath.Dir(filepath.Dir(filepath.Dir(file)))
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("locating the module root: no go.mod above %s", dir)
+		}
+		dir = parent
+	}
 }
 
 // World is one throwaway environment: a home directory, an environment
@@ -130,6 +166,13 @@ func (w *World) Setenv(name, value string) { w.env[name] = value }
 // written in those terms.
 func (w *World) Path(relative ...string) string {
 	return filepath.Join(append([]string{w.Home}, relative...)...)
+}
+
+// SnapshotKey is how Snapshot names a home-relative path, so a case can look
+// one up without hardcoding the "home/" prefix Snapshot's root-relative keys
+// carry.
+func (w *World) SnapshotKey(relative ...string) string {
+	return filepath.Join(append([]string{"home"}, relative...)...)
 }
 
 // WriteFile creates a home-relative file, making its parent directories.
@@ -190,6 +233,11 @@ func (w *World) RunWithInput(input string, args ...string) Result {
 		ExitCode: cmd.ProcessState.ExitCode(),
 	}
 }
+
+// Environ is the environment the program is run with, as name=value strings.
+// Exposed so a case can assert on the isolation itself rather than only on its
+// consequences.
+func (w *World) Environ() []string { return w.environ() }
 
 func (w *World) environ() []string {
 	env := make([]string, 0, len(w.env))
@@ -259,6 +307,22 @@ func (r Result) ExpectSilentStdout() Result {
 	return r
 }
 
+// ExpectNotImplemented asserts the invocation got past the parser, reached
+// cmd's dispatch arm, and found it unimplemented.
+//
+// Like usageMarker this wording is scaffolding, not spec. It exists so "argv
+// accepts this form" can be asserted positively -- the form reached its
+// dispatch arm -- instead of as the absence of a usage error, which also holds
+// when the program is broken some other way and so cannot fail for the reason
+// the case claims. Each use is replaced by an assertion on the command's real
+// behavior as that command's ticket lands.
+func (r Result) ExpectNotImplemented(cmd string) Result {
+	r.t.Helper()
+	return r.ExpectExit(1).
+		ExpectStderrLine("Error: " + cmd + " is not implemented yet.").
+		ExpectSilentStdout()
+}
+
 // ExpectSilentStderr asserts nothing was written to stderr.
 func (r Result) ExpectSilentStderr() Result {
 	r.t.Helper()
@@ -268,22 +332,29 @@ func (r Result) ExpectSilentStderr() Result {
 	return r
 }
 
-// Snapshot records every path under the world's home directory with its
-// content and mode, so a case can assert what a command did or did not change.
+// Snapshot records every path under the world's scratch root with its content
+// and mode, so a case can assert what a command did or did not change.
 type Snapshot map[string]string
 
-// Snapshot captures the current state of the home directory. The failure
+// Snapshot captures the current state of the whole scratch root. The failure
 // post-condition shared by both regimes of appspec/01 section 6, and the
 // dry-run contract of appspec/01 section 3, are both "no filesystem change" --
 // which is only checkable against a recorded before-state.
+//
+// The root, not Home: the Mackup folder can sit outside home (appspec/04's
+// file_system engine takes an arbitrary path), and the command runs with its
+// working directory at Root, so a snapshot of Home alone is blind to storage-
+// side and cwd mutations -- exactly the writes a "changed nothing" assertion
+// exists to catch. Paths are root-relative, so a file in home reads as
+// "home/.mackup.cfg".
 func (w *World) Snapshot() Snapshot {
 	w.t.Helper()
 	snapshot := Snapshot{}
-	err := filepath.WalkDir(w.Home, func(path string, entry fs.DirEntry, err error) error {
+	err := filepath.WalkDir(w.Root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		relative, err := filepath.Rel(w.Home, path)
+		relative, err := filepath.Rel(w.Root, path)
 		if err != nil {
 			return err
 		}
@@ -310,12 +381,12 @@ func (w *World) Snapshot() Snapshot {
 		return nil
 	})
 	if err != nil {
-		w.t.Fatalf("snapshotting the home directory: %v", err)
+		w.t.Fatalf("snapshotting the scratch root: %v", err)
 	}
 	return snapshot
 }
 
-// ExpectUnchanged asserts the home directory still matches before.
+// ExpectUnchanged asserts the scratch root still matches before.
 func (w *World) ExpectUnchanged(before Snapshot) {
 	w.t.Helper()
 	after := w.Snapshot()

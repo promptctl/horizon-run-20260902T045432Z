@@ -1,6 +1,8 @@
 package conformance
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -15,10 +17,14 @@ func TestHelpPrintsUsageToStdoutAndExitsZero(t *testing.T) {
 		world := NewWorld(t)
 		before := world.Snapshot()
 
+		// appspec/02 makes two things contract here and no more: --help goes
+		// to stdout and exits 0. The wording of the block itself is
+		// "human-facing and is not contract", so nothing below pins a line of
+		// it -- a case that pinned help text would fail on a rewording that
+		// broke no promise, and would still pass if the grammar changed.
 		world.Run(flag).
 			ExpectExit(0).
-			ExpectStdout("Usage:").
-			ExpectStdout("mackup [options] link install [<application>]").
+			ExpectStdout(usageMarker).
 			ExpectSilentStderr()
 
 		// appspec/02: "No other action, no config read."
@@ -84,7 +90,7 @@ func TestHelpAndVersionOutrankEverythingElseOnTheCommandLine(t *testing.T) {
 	// gate, and they take no other action -- not even the force-flag check.
 	NewWorld(t).Run("--help", "--force", "--force-no", "backup").
 		ExpectExit(0).
-		ExpectStdout("Usage:").
+		ExpectStdout(usageMarker).
 		ExpectSilentStderr()
 
 	NewWorld(t).Run("--version", "list").
@@ -94,21 +100,24 @@ func TestHelpAndVersionOutrankEverythingElseOnTheCommandLine(t *testing.T) {
 }
 
 func TestHelpAndVersionStopTheArgvScanWhereTheyAreFound(t *testing.T) {
-	NewWorld(t).Run("--help", "--nope").ExpectExit(0).ExpectStdout("Usage:")
+	NewWorld(t).Run("--help", "--nope").ExpectExit(0).ExpectStdout(usageMarker)
 	NewWorld(t).Run("--version", "-z").ExpectExit(0).ExpectStdout("Mackup ")
 
 	// An option that genuinely came first is still rejected.
 	NewWorld(t).Run("--nope", "--help").ExpectExit(1).ExpectStderr("--nope")
 
-	// -c takes an argument, so --help here is that argument, not the flag.
-	NewWorld(t).Run("-c", "--help", "list").ExpectSilentStdout()
+	// -c takes an argument, so --help here is that argument, not the flag:
+	// this is a `list` run with a (nonsense) config path, not a help request.
+	// Silence on stdout alone would not show that -- a crashed binary is
+	// silent too -- so the case asserts the run reached list.
+	NewWorld(t).Run("-c", "--help", "list").ExpectNotImplemented("list")
 }
 
 func TestUnrecognizedSubcommandWarnsThenPrintsUsageOnStderr(t *testing.T) {
 	result := NewWorld(t).Run("frobnicate").
 		ExpectExit(1).
 		ExpectStderr("frobnicate").
-		ExpectStderr("Usage:").
+		ExpectStderr(usageMarker).
 		ExpectSilentStdout()
 
 	if warning, _, _ := strings.Cut(result.Stderr, "\n"); !strings.Contains(warning, "frobnicate") {
@@ -122,7 +131,7 @@ func TestABareInvocationShowsUsage(t *testing.T) {
 	world := NewWorld(t)
 	before := world.Snapshot()
 
-	world.Run().ExpectExit(0).ExpectStdout("Usage:")
+	world.Run().ExpectExit(0).ExpectStdout(usageMarker)
 
 	world.ExpectUnchanged(before)
 }
@@ -148,7 +157,7 @@ func TestFormsMatchingNoUsageLineAreUsageErrors(t *testing.T) {
 
 			world.Run(args...).
 				ExpectExit(1).
-				ExpectStderr("Usage:").
+				ExpectStderr(usageMarker).
 				ExpectSilentStdout()
 
 			world.ExpectUnchanged(before)
@@ -156,55 +165,107 @@ func TestFormsMatchingNoUsageLineAreUsageErrors(t *testing.T) {
 	}
 }
 
-func TestEveryInvocationFormIsAccepted(t *testing.T) {
-	// Each listed form must get past the parser. None can succeed yet -- the
-	// resolvers and sync operations are later tickets -- so the observable
-	// proof that argv matched is that the failure is not a usage error.
-	for _, args := range [][]string{
-		{"list"},
-		{"show", "vim"},
-		{"backup"},
-		{"backup", "vim"},
-		{"restore"},
-		{"restore", "vim"},
-		{"link"},
-		{"link", "vim"},
-		{"link", "install"},
-		{"link", "install", "vim"},
-		{"link", "uninstall"},
-		{"link", "uninstall", "vim"},
+func TestEveryInvocationFormIsAcceptedAndReachesItsCommand(t *testing.T) {
+	// Every usage line of appspec/02, with the command each form selects.
+	// None can succeed yet -- the resolvers and sync operations are later
+	// tickets -- so what is observable is that the form got past the parser
+	// and reached that command's dispatch arm. Asserting the arm, rather than
+	// the absence of a usage error, is what makes this case able to fail:
+	// "no usage error" also holds when the program is broken in some other
+	// way, or prints its usage block under a different first word.
+	for _, test := range []struct {
+		args []string
+		cmd  string
+	}{
+		{[]string{"list"}, "list"},
+		{[]string{"show", "vim"}, "show"},
+		{[]string{"backup"}, "backup"},
+		{[]string{"backup", "vim"}, "backup"},
+		{[]string{"restore"}, "restore"},
+		{[]string{"restore", "vim"}, "restore"},
+		{[]string{"link"}, "link"},
+		{[]string{"link", "vim"}, "link"},
+		{[]string{"link", "install"}, "link install"},
+		{[]string{"link", "install", "vim"}, "link install"},
+		{[]string{"link", "uninstall"}, "link uninstall"},
+		{[]string{"link", "uninstall", "vim"}, "link uninstall"},
 	} {
-		result := NewWorld(t).Run(args...)
-		if strings.Contains(result.Stderr, "Usage:") {
-			t.Errorf("%s was rejected as a usage error\nstderr: %q", result.invocation(), result.Stderr)
-		}
+		NewWorld(t).Run(test.args...).ExpectNotImplemented(test.cmd)
 	}
 }
 
 func TestOptionsAreAcceptedOnEitherSideOfTheSubcommand(t *testing.T) {
+	// appspec/02: "Options may be given before or after the subcommand." Each
+	// form must select the same command whichever side its options sit on.
 	for _, args := range [][]string{
 		{"-f", "-n", "-v", "-r", "backup", "vim"},
 		{"backup", "vim", "--force", "--dry-run", "--verbose", "--root"},
 		{"--force", "backup", "--dry-run", "vim", "-vr"},
 	} {
-		result := NewWorld(t).Run(args...)
-		if strings.Contains(result.Stderr, "Usage:") {
-			t.Errorf("%s was rejected as a usage error\nstderr: %q", result.invocation(), result.Stderr)
+		NewWorld(t).Run(args...).ExpectNotImplemented("backup")
+	}
+}
+
+func TestTheHarnessIsolatesTheProgramFromTheDeveloperEnvironment(t *testing.T) {
+	// The rig's whole premise: a case observes the program against a home
+	// directory and an environment it owns, not the developer's. If this ever
+	// fails, every filesystem assertion in this suite is meaningless.
+	//
+	// This asserts the isolation itself, not a consequence of it. No command
+	// implemented so far reads HOME -- appspec/02 says --help reads no config
+	// at all -- so a case that ran a command and watched nothing happen would
+	// pass identically with the developer's home leaked in, and could not fail
+	// for the reason it claimed. Add the program-side observation once a
+	// HOME-reading command lands (macklebox-resolvers-5iw.2).
+	for _, name := range []string{"XDG_CONFIG_HOME", "MACKUP_CONFIG"} {
+		t.Setenv(name, "/developer-machine/must-not-leak")
+	}
+
+	world := NewWorld(t)
+
+	realHome := os.Getenv("HOME")
+	if realHome == "" {
+		t.Fatal("the developer environment has no HOME, so this case cannot check that the world's home differs from it")
+	}
+	if world.Home == realHome {
+		t.Errorf("the world's home is the real HOME %q", realHome)
+	}
+
+	environment := map[string]string{}
+	for _, entry := range world.Environ() {
+		name, value, _ := strings.Cut(entry, "=")
+		environment[name] = value
+	}
+	if environment["HOME"] != world.Home {
+		t.Errorf("HOME in the program's environment = %q, want the world's home %q", environment["HOME"], world.Home)
+	}
+	for _, name := range []string{"XDG_CONFIG_HOME", "MACKUP_CONFIG"} {
+		if value, ok := environment[name]; ok {
+			t.Errorf("%s leaked from the developer environment into the program's, as %q", name, value)
 		}
 	}
 }
 
-func TestTheProgramSeesOnlyTheThrowawayHome(t *testing.T) {
-	// The rig's whole premise: a case observes the program against a home
-	// directory it owns, not the developer's. If this ever fails, every
-	// filesystem assertion in this suite is meaningless.
+func TestTheSnapshotWatchesTheWholeScratchRoot(t *testing.T) {
+	// A "changed nothing" assertion is only as wide as what the snapshot
+	// walks. appspec/04's file_system engine takes an arbitrary path, so the
+	// Mackup folder need not live under home, and the command runs with its
+	// working directory at the scratch root -- a snapshot of home alone would
+	// be blind to exactly the storage-side and cwd writes these assertions
+	// exist to catch.
 	world := NewWorld(t)
 	world.WriteFile(".mackup.cfg", "[storage]\nengine = file_system\n", 0o600)
 
 	before := world.Snapshot()
-	if _, ok := before[".mackup.cfg"]; !ok {
-		t.Fatalf("the world's home does not contain the file just written to it: %v", before)
+	if _, ok := before[world.SnapshotKey(".mackup.cfg")]; !ok {
+		t.Fatalf("the snapshot does not contain the file just written to home: %v", before)
 	}
-	world.Run("--help").ExpectExit(0)
-	world.ExpectUnchanged(before)
+
+	outside := filepath.Join("storage", "Mackup")
+	if err := os.MkdirAll(filepath.Join(world.Root, outside), 0o700); err != nil {
+		t.Fatalf("creating %s: %v", outside, err)
+	}
+	if _, ok := world.Snapshot()[outside]; !ok {
+		t.Errorf("the snapshot is blind to %s, created outside home", outside)
+	}
 }

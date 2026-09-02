@@ -42,6 +42,9 @@ make check        # go vet, go test (unit + conformance), gofmt check
 make conformance  # the black-box suite alone
 ```
 
+`make check` is the gate: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+runs exactly that command on every pull request and every push to `master`.
+
 ### The conformance suite
 
 `test/conformance/` builds the command and observes it the way
@@ -52,10 +55,24 @@ it leaves behind. Nothing in it reaches inside the program.
 
 Because the spec promises things no single command states — that `--help`
 touches nothing, that a rejected run makes no filesystem change, that
-`--dry-run` mutates nothing — a case can snapshot the home directory and assert
-it is unchanged, not merely that the output looked right. A case that can only
-be checked by calling an internal function belongs in that package's own tests
-instead.
+`--dry-run` mutates nothing — a case can snapshot the scratch root and assert
+it is unchanged, not merely that the output looked right. The whole root, not
+just the home directory inside it: `appspec/04`'s `file_system` engine takes an
+arbitrary path, so the Mackup folder need not live under `HOME`. A case that
+can only be checked by calling an internal function belongs in that package's
+own tests instead.
+
+The suite always runs with **`-count=1`**, and the Makefile keeps it out of the
+plain `go test ./...` run so that it does. The package imports nothing from
+`cmd/` or `internal/` — it shells out to `go build` — so Go's test cache cannot
+see the implementation, and a cached `ok` will happily outlive a program that
+has since been broken. Do not remove the flag.
+
+Every case must be able to fail for the reason it claims. Two rules follow:
+assert what the program *did*, never merely that it did not print a usage
+error; and never pin help, usage, or warning wording, which `appspec/02`
+declares human-facing and not contract — the suite knows that wording in one
+named constant, `usageMarker`, and nowhere else.
 
 `--version` reports the package's own version when one was stamped in, and the
 fallback token `unknown` otherwise, per the spec's provenance rule.
