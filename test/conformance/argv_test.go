@@ -200,16 +200,15 @@ func TestABareInvocationShowsUsage(t *testing.T) {
 
 func TestFormsMatchingNoUsageLineAreUsageErrors(t *testing.T) {
 	tests := map[string][]string{
-		"unrecognized subcommand":         {"frobnicate"},
-		"show without an application":     {"show"},
-		"extra positional after list":     {"list", "vim"},
-		"extra positional after show":     {"show", "vim", "git"},
-		"extra positional after backup":   {"backup", "vim", "git"},
-		"extra positional after link":     {"link", "vim", "git"},
-		"unknown long option":             {"--nope", "list"},
-		"unknown short option":            {"-z", "list"},
-		"missing config-file argument":    {"list", "--config-file"},
-		"a bare double dash is not a key": {"--", "list"},
+		"unrecognized subcommand":       {"frobnicate"},
+		"show without an application":   {"show"},
+		"extra positional after list":   {"list", "vim"},
+		"extra positional after show":   {"show", "vim", "git"},
+		"extra positional after backup": {"backup", "vim", "git"},
+		"extra positional after link":   {"link", "vim", "git"},
+		"unknown long option":           {"--nope", "list"},
+		"unknown short option":          {"-z", "list"},
+		"missing config-file argument":  {"list", "--config-file"},
 	}
 	// The exit code is deliberately not pinned, and the streams deliberately
 	// are. appspec/07 says in as many words that stderr carries "argument-
@@ -232,17 +231,33 @@ func TestFormsMatchingNoUsageLineAreUsageErrors(t *testing.T) {
 	// ExitFailure. This is the same line TestABareInvocationShowsUsage draws;
 	// this table was on the wrong side of it.
 	//
-	// {"show", "-"} was here and is deliberately gone. appspec/02 never
-	// mentions a bare "-": its grammar is `show <application>`, which as a
-	// grammar accepts any token, and the spec's own parser-behavior section
-	// records reactions to a missing or duplicate positional and nothing
-	// about this one. This implementation rejects "-" as an unrecognized
-	// argument, so asserting a usage error here pinned the implementation
-	// rather than the contract -- and if "-" does bind as an application, the
-	// contract is the literal "Unsupported application: -" instead, which is
-	// the opposite answer on the same stream. Left unpinned until the ticket
-	// that adds application validation settles it against the reference:
-	// macklebox-invocation-0y1.
+	// {"show", "-"} and {"--", "list"} were both here and are deliberately
+	// gone, for one reason: appspec/02 settles neither, so a case here fails
+	// a conformant reimplementation for making a different defensible choice.
+	//
+	// The spec's grammar is `show <application>`, which as a grammar accepts
+	// any token, and its parser-behavior section enumerates reactions to a
+	// missing or duplicate positional and to an unrecognized subcommand --
+	// nothing about either dash. What the two conventional parsers do with
+	// them was run rather than recalled, and they disagree with each other on
+	// both forms: argparse reads `-- list` as an end-of-options marker and
+	// runs list, exiting 0, while rejecting a bare "-"; docopt does the
+	// reverse, rejecting `-- list` -- it strips the "--", and the token left
+	// over is then an argument where the pattern wants the command -- and
+	// binding `show -` to <application> "-". Two reasonable parsers, opposite
+	// answers on each form, and a spec that names neither: the suite must not
+	// pick a side the spec declines to take. In particular, do not restore
+	// either case on the argument that the reference "would" accept it; that
+	// premise was checked and does not hold in one direction or the other.
+	//
+	// Neither form is left unasserted, and neither is a claim that this
+	// implementation is wrong -- it rejects both, agreeing with docopt on
+	// "--" and with argparse on "-". That is its own choice, pinned where a
+	// choice belongs: internal/cli's TestParseRejectsABareDash and
+	// TestParseRejectsTheUndocumentedDoubleDash. If "-" does bind as an
+	// application the contract becomes the literal "Unsupported application:
+	// -" instead, the opposite answer on the same stream.
+	// macklebox-invocation-0y1 settles both against the reference.
 	for name, args := range tests {
 		t.Run(name, func(t *testing.T) {
 			world := NewWorld(t)
@@ -603,14 +618,36 @@ func TestEveryDocCommentNamesWhatItDocuments(t *testing.T) {
 	}
 }
 
-// declaredNames maps every name a file declares at package scope to the kind
-// of thing it is, so a doc comment opening with one of them can be recognised
-// as belonging to that declaration rather than to the one it sits on.
+// declaredNames maps every name a file declares -- package-scope declarations
+// and methods alike -- to the kind of thing it is, so a doc comment opening
+// with one of them can be recognised as belonging to that declaration rather
+// than to the one it sits on.
+//
+// Methods are in deliberately, though a method name is not a package-scope
+// name. One of the three orphaned comments that motivated this case was a
+// method's (ExpectStdout's, taken by ExpectFailureExit), and a method's doc
+// can be slid onto a grouped block exactly as a function's was. Excluding
+// methods would make that instance invisible here, which is the shape this
+// case has already been caught in once. The cost is the other direction: a
+// collective comment on a grouped block that happens to open with a method
+// name is reported as orphaned when it is not. That fails loudly, names the
+// collision, and is fixed by rewording -- the failure direction worth having.
+//
+// A method never displaces a package-scope declaration of the same name, so
+// the kind named in the diagnostic is the one a reader will actually find at
+// package scope. harness_test.go declares both `type Snapshot` and `func (w
+// *World) Snapshot`, and calling that one a function sent the reader looking
+// for something that is not there.
 func declaredNames(file *ast.File) map[string]string {
 	names := map[string]string{}
+	methods := map[string]string{}
 	for _, declaration := range file.Decls {
 		switch d := declaration.(type) {
 		case *ast.FuncDecl:
+			if d.Recv != nil {
+				methods[d.Name.Name] = "method"
+				continue
+			}
 			names[d.Name.Name] = "function"
 		case *ast.GenDecl:
 			for _, spec := range d.Specs {
@@ -623,6 +660,11 @@ func declaredNames(file *ast.File) map[string]string {
 					}
 				}
 			}
+		}
+	}
+	for name, kind := range methods {
+		if _, taken := names[name]; !taken {
+			names[name] = kind
 		}
 	}
 	return names

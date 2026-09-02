@@ -68,24 +68,78 @@ func TestTheSnapshotRecordsANonRegularFileWithoutOpeningIt(t *testing.T) {
 
 // snapshotWithinBound returns world.Snapshot(), failing the case if it has not
 // returned within snapshotBound.
+//
+// The snapshot runs on a spawned goroutine and reports into a recorder rather
+// than into t. Both reasons come down to the same rule: only the goroutine
+// running a case may touch that case's *testing.T.
+//
+// It makes the diagnosis exact. Snapshot reports its own failures with Fatalf,
+// which from a spawned goroutine logs and then stops that goroutine rather
+// than the case -- so nothing was ever sent, the wait ran the full bound, and
+// a harness error surfaced as "did not return", a cause the message could not
+// tell apart from a real hang and so had to hedge between. The recorder
+// carries that message back over the channel instead, and the case reports the
+// actual reason immediately.
+//
+// And it makes the timeout safe. On the timeout path t.Fatalf ends the case,
+// NewWorld's cleanups then chmod and remove the scratch root, and a snapshot
+// goroutine still walking that tree would fail on the vanishing files and call
+// Fatalf on a test that has completed -- which the testing package turns into
+// an unrecovered panic, taking down the whole binary and losing every
+// remaining case's result. A timeout would report itself as a crash somewhere
+// else. With the recorder that goroutine cannot reach t at all: whatever it
+// does after the bound, it does into an object nobody reads.
 func snapshotWithinBound(t *testing.T, world *World) Snapshot {
 	t.Helper()
-	done := make(chan Snapshot, 1)
-	// Snapshot reports its own errors through t, which the testing package
-	// requires be done from the goroutine running the case. It does that with
-	// Fatalf, which logs the message and then stops this goroutine rather than
-	// the case -- so on that path nothing is ever sent and the timeout below
-	// is what ends the wait, a full bound later. Both routes fail the case, so
-	// neither is missed; what the message must not do is name a cause, since
-	// it cannot tell the two apart. Verified that Fatalf's own message
-	// survives from a spawned goroutine, so the real reason is on the line
-	// above whenever there is one.
-	go func() { done <- world.Snapshot() }()
+
+	type outcome struct {
+		snapshot Snapshot
+		fatal    string
+		failed   bool
+	}
+	// Buffered, so a goroutine that finishes after the bound has elapsed can
+	// send and exit rather than blocking on a receive that will never come.
+	done := make(chan outcome, 1)
+
+	// A shallow copy: the snapshot shares the world's Root and reports into
+	// the recorder. Only the reporter differs, and world itself is untouched,
+	// since the case goes on using it on its own goroutine.
+	recorder := &recordingReporter{}
+	isolated := *world
+	isolated.t = recorder
+
+	go func() {
+		// recordingReporter.Fatalf panics rather than returning, because the
+		// real Fatalf does not return either. Caught here so a harness error
+		// comes back as a message instead of killing the process.
+		defer func() {
+			if raised := recover(); raised != nil {
+				fatal, ok := raised.(fatalFromRecorder)
+				if !ok {
+					panic(raised)
+				}
+				done <- outcome{fatal: string(fatal), failed: true}
+			}
+		}()
+		done <- outcome{snapshot: isolated.Snapshot()}
+	}()
+
 	select {
-	case snapshot := <-done:
-		return snapshot
+	case got := <-done:
+		if got.failed {
+			t.Fatalf("the snapshot failed: %s", got.fatal)
+		}
+		// Snapshot reports only through Fatalf today. This is here so that a
+		// later one reporting with Errorf is not swallowed by the recorder --
+		// which would leave a snapshot that had complained looking clean.
+		if len(recorder.messages) > 0 {
+			t.Fatalf("the snapshot returned but reported %v", recorder.messages)
+		}
+		return got.snapshot
 	case <-time.After(snapshotBound):
-		t.Fatalf("Snapshot did not return within %s: either it opened a non-regular file and blocked, which is what this case exists to catch, or it failed on the harness error logged above", snapshotBound)
+		// The message can name the cause now: a harness error takes the
+		// branch above rather than expiring the bound.
+		t.Fatalf("Snapshot did not return within %s, so it blocked rather than failed: opening a non-regular file is what this case exists to catch", snapshotBound)
 		return nil
 	}
 }
