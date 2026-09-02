@@ -11,6 +11,7 @@
 package conformance
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -860,6 +861,15 @@ var casesThatBuildNoWorld = map[string]string{
 	// but it asserts nothing about the program either, so there is no
 	// observation of the program to go stale.
 	"TestEveryDocCommentNamesWhatItDocuments": "reads cmd/ and internal/ sources itself via parser.ParseFile, so cmd/go records those reads and the cache key tracks the program even without the walk; asserts nothing about the program in any case",
+
+	// Same shape as the doc guard above and the same reason, with one
+	// difference worth stating: this one DOES assert something about the
+	// program -- that no file under cmd/ or internal/ names a terminal test.
+	// It is still not a stale-pass hazard, because it reads those files with
+	// os.ReadFile on every run, so cmd/go records the reads and a program that
+	// grew an isatty check would invalidate the cached result that said it had
+	// none. The assertion and the cache key are over the same bytes.
+	"TestNothingInTheProgramConsultsATerminal": "reads every cmd/ and internal/ source with os.ReadFile, so cmd/go records the reads and the cache key covers exactly what it asserts over",
 }
 
 func TestEveryCaseThatBuildsNoWorldIsAccountedFor(t *testing.T) {
@@ -1821,4 +1831,177 @@ func TestTheSnapshotSeesAFileRewrittenWithTheBytesItAlreadyHeld(t *testing.T) {
 	// 3's dry-run contract above all -- is weaker on this filesystem. This is
 	// now reached only when the OS itself held the stamp still.
 	t.Skipf("this filesystem's modification-time resolution is too coarse to register a rewrite of %s within %s, so a same-bytes rewrite is invisible to ExpectUnchanged here", key, 3*time.Second)
+}
+
+// TestColorIsEmittedWhenOutputIsNotATerminal is this ticket's done-claim, made
+// where the spec makes its promise: at the process boundary.
+//
+// Every process this suite runs writes down a pipe -- the harness captures
+// stdout and stderr into buffers, so the child's descriptors are never a
+// terminal. That is what makes these assertions the appspec/07 sentence
+// itself: "The program does not condition color on whether stdout is a TTY.
+// (observed: colors are emitted even when output is piped/redirected)." A
+// program that consulted isatty would come out uncoloured here and pass every
+// other case in this file.
+func TestColorIsEmittedWhenOutputIsNotATerminal(t *testing.T) {
+	world := NewWorld(t)
+	// appspec/07: normal progress / info -> yellow (33). The banner is the one
+	// informational message the program has before the sync commands land.
+	world.Run("--version").
+		ExpectExit(0).
+		ExpectVersionLine().
+		ExpectStdoutColor("33").
+		ExpectSilentStderr()
+
+	// appspec/07: fatal errors that exit -> bright red (91), on stderr.
+	world.Run("--force", "--force-no", "backup").
+		ExpectExit(1).
+		ExpectStderrColor("91").
+		ExpectSilentStdout()
+}
+
+// TestEveryFatalDiagnosticIsBrightRedOnStderr walks every fatal path the
+// program has today rather than sampling one.
+//
+// A colour applied at one call site and forgotten at the next is the drift the
+// ui.Level type exists to prevent, and appspec/02's exit-code table describes
+// all of these the same way -- "a single colored diagnostic line ... on
+// stderr". Each entry reaches a different diagnostic in the program; when a
+// later ticket replaces an unimplemented arm with real behaviour, its entry
+// here should follow the command rather than be deleted.
+func TestEveryFatalDiagnosticIsBrightRedOnStderr(t *testing.T) {
+	world := NewWorld(t)
+	for _, c := range []struct {
+		what string
+		argv []string
+	}{
+		{"the force-flag conflict, a literal contract token", []string{"--force", "--force-no", "backup"}},
+		{"a usage error's warning line", []string{"frobnicate"}},
+		{"a usage error from a missing operand", []string{"show"}},
+		{"an unimplemented subcommand", []string{"list"}},
+	} {
+		t.Run(c.what, func(t *testing.T) {
+			world.Run(c.argv...).
+				ExpectFailureExit().
+				ExpectStderrColor("91").
+				ExpectSilentStdout()
+		})
+	}
+}
+
+// TestAContractTokenSurvivesItsColor is the property that makes colouring a
+// diagnostic safe at all.
+//
+// appspec/07 names the force-conflict line as one of the literal tokens that
+// ARE contract, "matched by scripts/tests", while appspec/02 requires the same
+// line to be a coloured diagnostic. Both hold only if colour wraps the whole
+// message and never opens inside it, so a script grepping stderr for the
+// literal still finds it. ExpectStderrLine checks that for every token in the
+// suite; this case states it once in its own right, because it is the reason
+// that check is written the way it is.
+func TestAContractTokenSurvivesItsColor(t *testing.T) {
+	const token = "Options --force and --force-no are mutually exclusive."
+	result := NewWorld(t).Run("--force", "--force-no", "backup").
+		ExpectExit(1).
+		ExpectStderrLine(token)
+	if !strings.Contains(result.Stderr, token) {
+		t.Errorf("stderr = %q, want the token contiguous inside it", result.Stderr)
+	}
+	if !hasSGR(result.Stderr) {
+		t.Errorf("stderr = %q, want it coloured: appspec/02 makes this a colored diagnostic line", result.Stderr)
+	}
+}
+
+// TestTheUsageBlockIsRoutedButNotColored records a decision so a later reader
+// does not take it for an oversight.
+//
+// appspec/07's colour scheme assigns a level to progress, anomalies, success,
+// errors, verbose traces and diff decoration -- and none to the argument
+// parser's own usage text, which appspec/02 separately calls human-facing
+// wording rather than a machine-read contract. So this ticket ROUTES that
+// block (stdout for --help and a bare invocation, stderr after a usage-error
+// diagnostic, both of which appspec/07 states) and leaves it uncoloured;
+// colouring it would mean inventing a level the specification does not list.
+//
+// The warning line before it on a usage error is a different message and IS
+// coloured -- TestEveryFatalDiagnosticIsBrightRedOnStderr pins that -- so this
+// case checks the block alone.
+func TestTheUsageBlockIsRoutedButNotColored(t *testing.T) {
+	world := NewWorld(t)
+	world.Run("--help").ExpectExit(0).ExpectStdout(usageMarker).ExpectUncolored("stdout")
+	world.Run().ExpectExit(0).ExpectStdout(usageMarker).ExpectUncolored("stdout")
+
+	// On a usage error stderr carries the coloured warning first and the
+	// uncoloured block after it, so the assertion is about everything past the
+	// first line.
+	result := world.Run("frobnicate").ExpectExit(1).ExpectStderr(usageMarker)
+	_, block, found := strings.Cut(result.Stderr, "\n")
+	if !found {
+		t.Fatalf("stderr = %q, want a warning line and then the usage block", result.Stderr)
+	}
+	if hasSGR(block) {
+		t.Errorf("the usage block on stderr = %q, want it uncoloured", block)
+	}
+}
+
+// TestNothingInTheProgramConsultsATerminal pins the negative half of
+// appspec/07's colour sentence, which no black-box case can reach.
+//
+// The suite can observe that colour IS emitted down a pipe, and does. It
+// cannot observe that colour would also be emitted to a terminal without
+// allocating a pty, so the "unconditionally" half would otherwise be an
+// unenforced claim -- and an unenforced claim is decoration, which is the
+// lesson the -trimpath run in the Makefile was added for. What it can check is
+// that the program contains no terminal test to condition on, which is the
+// same statement from the other side.
+//
+// Scoped to the program, not the module: this suite is free to look at its own
+// descriptors, and a later ticket that legitimately needs isatty for something
+// other than colour will have to come here and say so.
+func TestNothingInTheProgramConsultsATerminal(t *testing.T) {
+	root, err := moduleRoot()
+	if err != nil {
+		t.Fatalf("locating the module root: %v", err)
+	}
+	// The spellings a Go program would use. golang.org/x/term is not a
+	// dependency of this module today, so its name appearing at all would be
+	// the change worth failing over; the other two are standard library and
+	// are how a terminal test is written without it.
+	terminalTests := []string{"IsTerminal", "ModeCharDevice", "golang.org/x/term"}
+
+	checked := 0
+	for _, dir := range []string{"cmd", "internal"} {
+		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			source, err := os.ReadFile(path)
+			if err != nil {
+				// Reported rather than fatal, for the reason Snapshot records
+				// an unreadable file instead of aborting: one unreadable file
+				// must not replace every other assertion in the case with a
+				// complaint about the harness. It is still a failure, because
+				// a file this guard could not read is a file it did not check.
+				t.Errorf("reading %s: %v", path, err)
+				return nil
+			}
+			checked++
+			relative, _ := filepath.Rel(root, path)
+			for _, spelling := range terminalTests {
+				if bytes.Contains(source, []byte(spelling)) {
+					t.Errorf("%s names %q: appspec/07 says the program does not condition colour on whether stdout is a TTY, and colour is emitted unconditionally. If this is a terminal test for something else, say so here.", relative, spelling)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walking %s: %v", dir, err)
+		}
+	}
+	// The backstop the doc guard carries for the same reason: a walk that
+	// reached nothing passes silently, and a rename of cmd/ or internal/ is
+	// exactly how that happens.
+	if checked == 0 {
+		t.Error("this guard read no program sources, so it checked nothing; cmd/ and internal/ moved")
+	}
 }

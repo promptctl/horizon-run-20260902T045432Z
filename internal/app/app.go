@@ -34,7 +34,7 @@ func Main(argv []string, streams *ui.IO) int {
 	// handled for us (Go raises SIGPIPE there); a redirect to a full disk is
 	// not, and would otherwise exit 0 with truncated output.
 	if err := streams.WriteError(); err != nil {
-		streams.Errf("Error: unable to write output: %s\n", err)
+		streams.Sayf(ui.Fatal, "Error: unable to write output: %s", err)
 		if code == ExitOK {
 			return ExitFailure
 		}
@@ -49,30 +49,48 @@ func runArgv(argv []string, streams *ui.IO) int {
 		var usageErr *cli.UsageError
 		if errors.As(err, &usageErr) {
 			// appspec/07 "Output streams": argument-parser usage and warning
-			// text on a usage error goes to stderr.
-			streams.Errf("mackup: %s\n", usageErr.Warning)
+			// text on a usage error goes to stderr. The warning is the
+			// diagnostic and is coloured -- appspec/02's exit-code table calls
+			// a fatal a "single colored diagnostic line" -- while the usage
+			// block after it is the parser's reference text, which appspec/07
+			// gives no level and appspec/02 declares non-contract wording. So
+			// it is routed but not coloured; see runArgv's help arm.
+			streams.Sayf(ui.Fatal, "mackup: %s", usageErr.Warning)
 			streams.Errln(cli.Usage)
 			return ExitFailure
 		}
-		streams.Errf("mackup: %s\n", err)
+		streams.Sayf(ui.Fatal, "mackup: %s", err)
 		return ExitFailure
 	}
 
 	// Still step 1: --help and --version short-circuit to stdout with exit 0,
 	// before any config read.
+	//
+	// The version banner is Progress -- appspec/07's "normal progress / info"
+	// -- so it is yellow on stdout, and the done-claim of this ticket names it
+	// as one of the two paths that must still show SGR when output is piped.
+	// The usage block is not: appspec/07's colour scheme assigns no level to
+	// the argument parser's own text, and appspec/02 states its wording is
+	// human-facing and not a machine-read contract. Routing it is the contract
+	// here; colouring it would be inventing a level the spec does not list.
 	switch {
 	case inv.Opts.Help:
 		streams.Outln(cli.Usage)
 		return ExitOK
 	case inv.Opts.Version:
-		streams.Outln(version.Banner())
+		streams.Say(ui.Progress, version.Banner())
 		return ExitOK
 	}
 
 	// Still step 1: the mutually exclusive force flags are rejected here,
 	// before config is loaded and before any action is performed.
 	if inv.Opts.Force && inv.Opts.ForceNo {
-		streams.Errln(ForceConflictMessage)
+		// Coloured, and the token survives it: Colorize wraps a whole message
+		// and never splits one, so the literal line appspec/07 makes contract
+		// stays contiguous for a script grepping stderr. ui.StripColor is the
+		// same property read from the other end, and the conformance suite
+		// asserts the token through it.
+		streams.Say(ui.Fatal, ForceConflictMessage)
 		return ExitFailure
 	}
 
@@ -95,15 +113,15 @@ func runPipeline(inv cli.Invocation, streams *ui.IO) int {
 	// location. Step 3: assemble the application database. Step 4/5: the
 	// environment-gate lattice (root guard, storage root, Mackup folder).
 	if err := loadConfig(inv); err != nil {
-		streams.Errf("Error: %s\n", err)
+		streams.Sayf(ui.Fatal, "Error: %s", err)
 		return ExitFailure
 	}
 	if err := assembleApplicationDatabase(inv); err != nil {
-		streams.Errf("Error: %s\n", err)
+		streams.Sayf(ui.Fatal, "Error: %s", err)
 		return ExitFailure
 	}
 	if err := environmentGate(inv); err != nil {
-		streams.Errf("Error: %s\n", err)
+		streams.Sayf(ui.Fatal, "Error: %s", err)
 		return ExitFailure
 	}
 

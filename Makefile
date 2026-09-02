@@ -299,8 +299,10 @@ check: vet test
 # "simplifying" it into one. The battery runs `make check` on a MUTATED tree,
 # once per entry, and a mutation that rewrites a line another entry anchors on
 # would fail this step for a reason that has nothing to do with the mutation
-# under test. Measured, not feared: 7 of the 52 entries break at least one other
-# entry's anchor when applied ("ExpectUnchanged gutted" breaks 6). Since `check`
+# under test. Measured, not feared: 13 of the 59 entries break at least one
+# other entry's anchor when applied ("ExpectUnchanged gutted" breaks 6), and
+# that count has grown with every batch of entries -- 7 of 52 when this target
+# was written. Since `check`
 # runs vet and test first, that only surfaces for a mutation the suite does NOT
 # kill -- which is exactly the SURVIVED result the battery exists to report, and
 # it would arrive dressed as "killed by (build/gate)". A check that converts the

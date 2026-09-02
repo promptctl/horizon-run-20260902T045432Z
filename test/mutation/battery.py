@@ -45,9 +45,11 @@ FILES = ["test/conformance/harness_test.go", "test/conformance/argv_test.go",
          "test/conformance/harness_unix_test.go",
          "internal/cli/usage.go", "internal/app/dispatch.go", "internal/app/app.go",
          "internal/cli/parse.go", "Makefile",
-         "internal/version/version.go"]
+         "internal/version/version.go",
+         "internal/ui/color.go"]
 
 H = "test/conformance/harness_test.go"
+C = "internal/ui/color.go"
 U = "internal/cli/usage.go"
 D = "internal/app/dispatch.go"
 A = "internal/app/app.go"
@@ -189,13 +191,13 @@ MUTATIONS = [
    None),
 
  ("--version with extra argv prints usage", [repl(A,
-   "\tcase inv.Opts.Version:\n\t\tstreams.Outln(version.Banner())\n\t\treturn ExitOK\n",
-   "\tcase inv.Opts.Version:\n\t\tif len(argv) > 1 {\n\t\t\tstreams.Outln(cli.Usage)\n\t\t\treturn ExitOK\n\t\t}\n\t\tstreams.Outln(version.Banner())\n\t\treturn ExitOK\n")],
+   "\tcase inv.Opts.Version:\n\t\tstreams.Say(ui.Progress, version.Banner())\n\t\treturn ExitOK\n",
+   "\tcase inv.Opts.Version:\n\t\tif len(argv) > 1 {\n\t\t\tstreams.Outln(cli.Usage)\n\t\t\treturn ExitOK\n\t\t}\n\t\tstreams.Say(ui.Progress, version.Banner())\n\t\treturn ExitOK\n")],
    None),
 
  ("the argv scan does not stop at --help", [repl(A,
    "\tcase inv.Opts.Help:\n\t\tstreams.Outln(cli.Usage)\n\t\treturn ExitOK\n",
-   "\tcase inv.Opts.Help:\n\t\tif len(argv) > 1 {\n\t\t\tstreams.Errf(\"mackup: unrecognized option: %s\\n\", argv[len(argv)-1])\n\t\t}\n\t\tstreams.Outln(cli.Usage)\n\t\treturn ExitOK\n")],
+   "\tcase inv.Opts.Help:\n\t\tif len(argv) > 1 {\n\t\t\tstreams.Sayf(ui.Fatal, \"mackup: unrecognized option: %s\", argv[len(argv)-1])\n\t\t}\n\t\tstreams.Outln(cli.Usage)\n\t\treturn ExitOK\n")],
    None),
 
  ("declaration slid under a spec-level doc comment", [repl(H,
@@ -271,6 +273,66 @@ MUTATIONS = [
  # contentsUnreadable with HasSuffix, so an unquoted target ending in that
  # marker turns every ExpectUnchanged in the world into a spurious "make the
  # fixture readable" over a file that already is.
+ # --- appspec/07 stream routing and colour (macklebox-foundation-waw.3) ------
+ #
+ # Every entry here is killable by the CONFORMANCE suite, not only by the unit
+ # tests, which is the bar an internal/ mutation has to clear: `make check` runs
+ # the unit packages first and stops there, so a mutation the unit tests catch
+ # says nothing about whether the rig can see it, and the battery reports
+ # RIG-BLIND for one that cannot.
+ #
+ # One appspec/07 property is deliberately NOT here: reset-safety, the
+ # re-application of a colour after an embedded reset. No message the program
+ # emits today contains an embedded reset -- the composed shapes arrive with
+ # the diff detail and the per-app verbose header in later tickets -- so the
+ # rig genuinely cannot observe it yet, and an entry for it would report
+ # RIG-BLIND accurately. internal/ui's unit tests carry it until a composed
+ # message exists; add the entry with that message.
+
+ ("colour is not emitted at all", [repl(C,
+   '\topen := escape + spec.sgr + "m"\n\treturn open + embeddedReset.ReplaceAllString(text, reset+open) + reset',
+   '\t_ = spec\n\treturn text')],
+   'want it coloured'),
+
+ ("a coloured string is not terminated with a reset", [repl(C,
+   '\treturn open + embeddedReset.ReplaceAllString(text, reset+open) + reset',
+   '\treturn open + embeddedReset.ReplaceAllString(text, reset+open)')],
+   'want it to end in a reset'),
+
+ # appspec/07 gives fatal errors bright red and non-fatal copy failures red,
+ # and colour alone conveys the level -- so flattening the two erases the only
+ # thing that says whether the program stopped.
+ ("a fatal error takes the non-fatal colour", [repl(C,
+   'Fatal:       {sgr: "91"', 'Fatal:       {sgr: "31"')],
+   'want it to open with'),
+
+ # The stream is contract, not cosmetics. This is that defect in its purest
+ # form: the message is right, the colour is right, the stream is wrong.
+ ("a fatal diagnostic is routed to stdout", [repl(C,
+   'Fatal:       {sgr: "91", on: toStderr', 'Fatal:       {sgr: "91", on: toStdout')],
+   'want nothing'),
+
+ ("the version banner loses its colour", [repl(A,
+   'streams.Say(ui.Progress, version.Banner())', 'streams.Outln(version.Banner())')],
+   'want it coloured'),
+
+ # The opposite mistake to the one above, and the reason the decision is
+ # written down in the program and in the case: appspec/07 lists no level for
+ # the argument parser's usage text, so colouring it invents one.
+ ("the usage block is coloured", [repl(A,
+   '\tcase inv.Opts.Help:\n\t\tstreams.Outln(cli.Usage)',
+   '\tcase inv.Opts.Help:\n\t\tstreams.Say(ui.Progress, cli.Usage)')],
+   'want no colour'),
+
+ # appspec/07: the program does not condition colour on whether stdout is a
+ # TTY. The rig runs every process down a pipe, so a program that consulted a
+ # terminal would emit nothing here.
+ ("colour is conditioned on a terminal", [repl(A,
+   'func runArgv(argv []string, streams *ui.IO) int {',
+   'func stdoutIsTerminal() bool {\n\tinfo, err := os.Stdout.Stat()\n\treturn err == nil && info.Mode()&os.ModeCharDevice != 0\n}\n\nfunc runArgv(argv []string, streams *ui.IO) int {'),
+   repl(A, 'import (\n\t"errors"', 'import (\n\t"errors"\n\t"os"')],
+   'names "ModeCharDevice"'),
+
  ("the symlink target is recorded unquoted", [repl(H,
    'snapshot[relative] = fmt.Sprintf("symlink %04o @%d -> %q", info.Mode().Perm(), stamp, target)',
    'snapshot[relative] = fmt.Sprintf("symlink %04o @%d -> %s", info.Mode().Perm(), stamp, target)')],

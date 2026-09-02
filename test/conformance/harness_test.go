@@ -1047,6 +1047,37 @@ type Result struct {
 
 func (r Result) invocation() string { return "mackup " + strings.Join(r.Args, " ") }
 
+// sgrSequence matches one ANSI SGR sequence -- ESC [ parameters m -- which is
+// the only escape this program emits.
+//
+// Deliberately NOT internal/ui's own pattern, and this is the one place the
+// duplication is the point rather than a cost. This package observes the
+// program from outside and imports nothing from it; a suite that stripped
+// colour with the program's own definition of colour would agree with it by
+// construction, and the cases below would hold for any pair of definitions
+// that happened to match -- including a broken pair. The header of this file
+// says nothing here reaches inside the program; the colour scheme is not an
+// exception to that, it is a case of it.
+var sgrSequence = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// stripSGR removes every colour sequence, leaving the message.
+//
+// appspec/07 colours whole messages, so what is left is the exact text -- and
+// that is what makes it legitimate to assert a literal contract token against
+// a stream appspec/02 requires to be a "single colored diagnostic line".
+func stripSGR(text string) string { return sgrSequence.ReplaceAllString(text, "") }
+
+// hasSGR reports whether text carries colour.
+func hasSGR(text string) bool { return sgrSequence.MatchString(text) }
+
+// StdoutText and StderrText are the streams with their colour removed. The raw
+// fields stay raw: an emptiness assertion has to be able to tell "nothing" from
+// "escape sequences and nothing else".
+func (r Result) StdoutText() string { return stripSGR(r.Stdout) }
+
+// StderrText is the stderr half of StdoutText.
+func (r Result) StderrText() string { return stripSGR(r.Stderr) }
+
 // ExpectExit asserts the process exit code.
 func (r Result) ExpectExit(code int) Result {
 	r.w.t.Helper()
@@ -1101,10 +1132,25 @@ func (r Result) ExpectEitherStream(want string) Result {
 
 // ExpectStderrLine asserts stderr is exactly one line, equal to want. Used for
 // the literal contract tokens of appspec/07.
+//
+// Compared against the text rather than the raw bytes, because appspec/02's
+// exit-code table requires these to be "a single colored diagnostic line": the
+// colour is contract too, and asserted separately by ExpectStderrColor, but it
+// is not part of the token.
+//
+// The contiguity check beside it is the half that stripping would otherwise
+// throw away, and it is the actual promise appspec/07 makes about a token
+// "matched by scripts/tests". A program that opened a colour in the MIDDLE of
+// the token would leave the stripped text equal and the raw stream ungreppable
+// -- exactly the failure a script would hit and the suite would not. Verified
+// by splitting the force-conflict line with an escape: stripped-only passes,
+// this fails.
 func (r Result) ExpectStderrLine(want string) Result {
 	r.w.t.Helper()
-	if r.Stderr != want+"\n" {
-		r.w.t.Errorf("%s stderr = %q, want exactly %q", r.invocation(), r.Stderr, want+"\n")
+	if r.StderrText() != want+"\n" {
+		r.w.t.Errorf("%s stderr = %q, want exactly %q once colour is stripped", r.invocation(), r.Stderr, want+"\n")
+	} else if !strings.Contains(r.Stderr, want) {
+		r.w.t.Errorf("%s stderr = %q: the text is right but colour splits it, so a script matching %q verbatim would miss it", r.invocation(), r.Stderr, want)
 	}
 	return r
 }
@@ -1120,8 +1166,10 @@ func (r Result) ExpectStderrLine(want string) Result {
 // same vacuity round 21 closed for the line's shape, left open for its value.
 func (r Result) ExpectStdoutLine(want string) Result {
 	r.w.t.Helper()
-	if r.Stdout != want+"\n" {
-		r.w.t.Errorf("%s stdout = %q, want exactly %q", r.invocation(), r.Stdout, want+"\n")
+	if r.StdoutText() != want+"\n" {
+		r.w.t.Errorf("%s stdout = %q, want exactly %q once colour is stripped", r.invocation(), r.Stdout, want+"\n")
+	} else if !strings.Contains(r.Stdout, want) {
+		r.w.t.Errorf("%s stdout = %q: the text is right but colour splits it, so a script matching %q verbatim would miss it", r.invocation(), r.Stdout, want)
 	}
 	return r
 }
@@ -1142,8 +1190,69 @@ var versionLine = regexp.MustCompile(`^Mackup \S+\n$`)
 // these cases able to fail for the reason they claim.
 func (r Result) ExpectVersionLine() Result {
 	r.w.t.Helper()
-	if !versionLine.MatchString(r.Stdout) {
-		r.w.t.Errorf("%s stdout = %q, want exactly one \"Mackup <version>\" line", r.invocation(), r.Stdout)
+	if !versionLine.MatchString(r.StdoutText()) {
+		r.w.t.Errorf("%s stdout = %q, want exactly one \"Mackup <version>\" line once colour is stripped", r.invocation(), r.Stdout)
+	}
+	return r
+}
+
+// ExpectStdoutColor asserts stdout opens in the given SGR parameters and that
+// every sequence in it is terminated -- appspec/07: "Every colored string is
+// terminated with a reset."
+//
+// The parameters are passed as the spec writes them ("33", "91"), so a case
+// reads as the line of appspec/07 it comes from rather than as a byte string.
+func (r Result) ExpectStdoutColor(parameters string) Result {
+	r.w.t.Helper()
+	return r.expectColor("stdout", r.Stdout, parameters)
+}
+
+// ExpectStderrColor is the stderr half of ExpectStdoutColor.
+func (r Result) ExpectStderrColor(parameters string) Result {
+	r.w.t.Helper()
+	return r.expectColor("stderr", r.Stderr, parameters)
+}
+
+func (r Result) expectColor(name, text, parameters string) Result {
+	r.w.t.Helper()
+	if !hasSGR(text) {
+		r.w.t.Errorf("%s %s = %q, want it coloured: appspec/07 emits colour unconditionally, and this stream is a pipe, not a terminal", r.invocation(), name, text)
+		return r
+	}
+	// Line by line, because appspec/07's promise is about every colored
+	// STRING, not about the stream. A stream can legitimately mix the two: a
+	// usage error writes a coloured diagnostic and then the uncoloured usage
+	// block, and asking that the whole of stderr end in a reset failed there
+	// over output that is exactly right. Observed, which is why this is not
+	// the one-line HasSuffix it started as.
+	first := true
+	for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
+		if !hasSGR(line) {
+			continue
+		}
+		if first {
+			if open := "\x1b[" + parameters + "m"; !strings.HasPrefix(line, open) {
+				r.w.t.Errorf("%s %s first coloured line = %q, want it to open with %q", r.invocation(), name, line, open)
+			}
+			first = false
+		}
+		if !strings.HasSuffix(line, "\x1b[0m") {
+			r.w.t.Errorf("%s %s coloured line = %q, want it to end in a reset; appspec/07: every colored string is terminated with a reset", r.invocation(), name, line)
+		}
+	}
+	return r
+}
+
+// ExpectUncolored asserts a stream carries no colour at all. For the argument
+// parser's usage block, which appspec/07's scheme gives no level.
+func (r Result) ExpectUncolored(name string) Result {
+	r.w.t.Helper()
+	text := r.Stdout
+	if name == "stderr" {
+		text = r.Stderr
+	}
+	if hasSGR(text) {
+		r.w.t.Errorf("%s %s = %q, want no colour", r.invocation(), name, text)
 	}
 	return r
 }
