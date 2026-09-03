@@ -231,14 +231,12 @@ func TestBareInvocationShowsUsage(t *testing.T) {
 }
 
 func TestSubcommandsReachDispatch(t *testing.T) {
-	// Until the sync tickets land the five copy/link subcommands report that
-	// they are unimplemented -- but they do so from dispatch, which proves
-	// argv carried them through the whole pipeline. list and show are no
-	// longer in this list because they now do their work; the cases below
-	// assert that, which is the same claim in its final form.
+	// Until the link tickets land the three link subcommands report that they
+	// are unimplemented -- but they do so from dispatch, which proves argv
+	// carried them through the whole pipeline. list, show, backup and restore
+	// are no longer in this list because they now do their work; the cases
+	// elsewhere assert that, which is the same claim in its final form.
 	for _, argv := range [][]string{
-		{"backup"},
-		{"restore", "vim"},
 		{"link"},
 		{"link", "install"},
 		{"link", "uninstall", "vim"},
@@ -326,7 +324,7 @@ func TestFatalDiagnosticsAreColoredOnStderr(t *testing.T) {
 	}{
 		{"the force-flag conflict", []string{"--force", "--force-no", "backup"}},
 		{"a usage error's warning line", []string{"frobnicate"}},
-		{"an unimplemented subcommand", []string{"backup"}},
+		{"an unimplemented subcommand", []string{"link"}},
 		{"an unknown application named to show", []string{"show", "frobnicate"}},
 		{"the environment gate's storage-root refusal", []string{"-c", absentStorageConfig, "list"}},
 	} {

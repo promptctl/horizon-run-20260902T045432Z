@@ -394,45 +394,76 @@ func TestEveryInvocationFormIsAcceptedAndReachesItsCommand(t *testing.T) {
 	// when the program is broken in some other way, or prints its usage block
 	// under a different first word.
 	//
-	// The two enumeration forms have landed and are asserted by what they DO
-	// -- that is the replacement ExpectNotImplemented's doc promises for each
-	// use "as that command's ticket lands", and it is a stronger claim than
-	// the placeholder made. The five sync forms still report themselves
+	// The four landed forms each carry the stdout fragment only their own
+	// command produces, which is the replacement ExpectNotImplemented's doc
+	// promises for each use "as that command's ticket lands". Exit 0 and a
+	// silent stderr is NOT that replacement: a copy form run against a world
+	// holding no file the named application owns exits 0 in silence whether it
+	// reached its own arm, the other direction's, or no arm at all. Observed,
+	// by dispatching backup to restoreDirection and watching every row here
+	// pass -- and again by answering `show` with list's output, which this
+	// case also could not see. The three link forms still report themselves
 	// unimplemented, from dispatch, which is the same positive assertion in
 	// the only shape available to a command whose ticket is still open.
 	//
-	// Each world needs a resolvable config and a storage root: appspec/02 puts
-	// the config gate before dispatch for every subcommand and appspec/01
-	// section 4 puts the environment gate there too, so without them the run
-	// dies at a gate and this case would report that the parser rejected a
-	// form it accepted perfectly. UseResolvableStorage supplies both.
+	// Hence the file each copy world is seeded with, on the side that
+	// direction reads from: a home file for backup, a Mackup-folder file for
+	// restore. Without one there is nothing to carry across and nothing to
+	// print, and the progress line naming it is what says which way the run
+	// went.
+	//
+	// newSyncWorld supplies the rest, for the reasons its own comment gives:
+	// a resolvable config and storage root, because appspec/02 puts the config
+	// gate before dispatch for every subcommand and appspec/01 section 4 puts
+	// the environment gate there too; and the Mackup folder, because backup
+	// and restore each run a FIFTH gate (appspec/01 section 4 level 2 and 3)
+	// that this case is not about -- without it backup would stop to ask
+	// whether to create the folder and, with stdin at end-of-input, fail
+	// there, reported here as a rejected invocation form.
+	//
+	// The application is the probe rather than a shipped key for the reason
+	// probeKey exists: the file set under test is this case's own, so the
+	// progress line it asserts cannot change because the shipped catalog was
+	// re-generated. appspec/02 writes the operand as <application>, and one
+	// key satisfies that usage line as well as another.
+	const probeFile = ".probrc"
 	for _, test := range []struct {
 		args []string
-		cmd  string
-		// done marks a form whose command is implemented: it must succeed and
-		// print to stdout rather than report itself unimplemented.
-		done bool
+		// cmd is the arm the form selects. It names the command in the
+		// unimplemented diagnostic, and it chooses which side of the copy the
+		// world is seeded on -- so a row that reached the wrong arm is a row
+		// whose seeded file is on the wrong side of it.
+		cmd string
+		// want is the stdout fragment only cmd produces, and the whole of what
+		// makes a landed row able to fail. Empty marks a form whose command is
+		// not implemented yet: those report themselves from dispatch instead.
+		want string
 	}{
-		{args: []string{"list"}, cmd: "list", done: true},
-		{args: []string{"show", "vim"}, cmd: "show", done: true},
-		{args: []string{"backup"}, cmd: "backup"},
-		{args: []string{"backup", "vim"}, cmd: "backup"},
-		{args: []string{"restore"}, cmd: "restore"},
-		{args: []string{"restore", "vim"}, cmd: "restore"},
+		{args: []string{"list"}, cmd: "list", want: listHeader},
+		{args: []string{"show", probeKey}, cmd: "show", want: showNamePrefix + "Probe"},
+		{args: []string{"backup"}, cmd: "backup", want: backupVerb + " " + probeFile + " ..."},
+		{args: []string{"backup", probeKey}, cmd: "backup", want: backupVerb + " " + probeFile + " ..."},
+		{args: []string{"restore"}, cmd: "restore", want: restoreVerb + " " + probeFile + " ..."},
+		{args: []string{"restore", probeKey}, cmd: "restore", want: restoreVerb + " " + probeFile + " ..."},
 		{args: []string{"link"}, cmd: "link"},
-		{args: []string{"link", "vim"}, cmd: "link"},
+		{args: []string{"link", probeKey}, cmd: "link"},
 		{args: []string{"link", "install"}, cmd: "link install"},
-		{args: []string{"link", "install", "vim"}, cmd: "link install"},
+		{args: []string{"link", "install", probeKey}, cmd: "link install"},
 		{args: []string{"link", "uninstall"}, cmd: "link uninstall"},
-		{args: []string{"link", "uninstall", "vim"}, cmd: "link uninstall"},
+		{args: []string{"link", "uninstall", probeKey}, cmd: "link uninstall"},
 	} {
-		world := NewWorld(t)
-		world.UseResolvableStorage()
-		if test.done {
-			world.Run(test.args...).ExpectExit(0).ExpectSilentStderr()
+		world := newSyncWorld(t, probeFile)
+		switch test.cmd {
+		case "backup":
+			world.WriteFile(probeFile, "from home\n", 0o644)
+		case "restore":
+			world.WriteMackup(probeFile, "from storage\n", 0o600)
+		}
+		if test.want == "" {
+			world.Run(test.args...).ExpectNotImplemented(test.cmd)
 			continue
 		}
-		world.Run(test.args...).ExpectNotImplemented(test.cmd)
+		world.Run(test.args...).ExpectExit(0).ExpectSilentStderr().ExpectStdout(test.want)
 	}
 }
 
@@ -446,17 +477,45 @@ func TestOptionsAreAcceptedOnEitherSideOfTheSubcommand(t *testing.T) {
 	// the remaining forms pin that choice so it cannot be lost by accident,
 	// not because the spec requires it.
 	//
-	// The config gate is satisfied for the same reason it is in the case
-	// above: an option accepted on either side of the subcommand is only
-	// observable once the run gets far enough to reach the subcommand.
+	// The config gate and the Mackup-folder gate are satisfied for the same
+	// reason they are in the case above: an option accepted on either side of
+	// the subcommand is only observable once the run gets far enough to reach
+	// the subcommand. So is the seeded home file -- an option is observable
+	// only in a run that had something to do.
+	//
+	// What each form asserts is the LONG progress line and an empty
+	// destination: --verbose chose that spelling over the short one, and
+	// --dry-run is why nothing landed under it. Exit 0 and a silent stderr
+	// asserted neither, and a parser that dropped every option appearing after
+	// the subcommand -- the exact regression this case is named for -- passed
+	// it. Observed, by writing that parser.
+	//
+	// --force and --root ride along unobserved, and this case does not pretend
+	// otherwise. Neither has an effect here to watch: appspec/01 section 3
+	// puts the replace prompt inside the mutation --dry-run declines to
+	// perform, so there is no prompt for --force to skip, and --root only
+	// waives a superuser refusal that a test process does not trigger. They
+	// are here as SPELLINGS whose position must be accepted, which the exit
+	// code still covers -- a parser that rejected one outright would fail on
+	// the usage error. The two conformance cases that watch what --force and
+	// --dry-run DO are in sync_test.go; this one is about where they may sit.
+	const probeFile = ".probrc"
 	for _, args := range [][]string{
-		{"-f", "-n", "-v", "-r", "backup", "vim"},
-		{"backup", "vim", "--force", "--dry-run", "--verbose", "--root"},
-		{"--force", "backup", "--dry-run", "vim", "-vr"},
+		{"-f", "-n", "-v", "-r", "backup", probeKey},
+		{"backup", probeKey, "--force", "--dry-run", "--verbose", "--root"},
+		{"--force", "backup", "--dry-run", probeKey, "-vr"},
 	} {
-		world := NewWorld(t)
-		world.UseResolvableStorage()
-		world.Run(args...).ExpectNotImplemented("backup")
+		world := newSyncWorld(t, probeFile)
+		world.WriteFile(probeFile, "from home\n", 0o644)
+
+		result := world.Run(args...).ExpectExit(0).ExpectSilentStderr()
+
+		want := backupVerb + "\n  " + world.Path(probeFile) + "\n  to\n  " + world.Mackup(probeFile) + " ..."
+		if !strings.Contains(result.StdoutText(), want) {
+			t.Errorf("mackup %s stdout = %q, want the --verbose long progress form %q",
+				strings.Join(args, " "), result.Stdout, want)
+		}
+		expectAbsent(t, world.Mackup(probeFile))
 	}
 }
 
@@ -959,6 +1018,25 @@ func TestEveryCaseThatBuildsNoWorldIsAccountedFor(t *testing.T) {
 		t.Fatalf("reading %s: %v", dir, err)
 	}
 
+	// The set of functions in this package that reach NewWorld, computed
+	// before the cases are checked, so that a case building its world through
+	// a HELPER counts as building one.
+	//
+	// The guard used to look for the identifier NewWorld in the case body
+	// alone, and that was right about the hazard and wrong about the shape: a
+	// helper like newSyncWorld calls NewWorld on the case's behalf, so
+	// readImplementationSources DOES run and the result IS in the cache key,
+	// while the guard reported otherwise. Adding fourteen such cases to
+	// casesThatBuildNoWorld would have been the wrong repair twice over --
+	// each entry is a standing claim that the case does not observe the
+	// program, and every one of them does.
+	//
+	// A fixed point rather than one level, because a helper is free to call
+	// another helper, and a guard that handles exactly the depth in the tree
+	// today is one that reports a false failure the first time someone adds a
+	// layer.
+	worldBuilders := worldBuildingFunctions(t, dir, entries)
+
 	found := map[string]bool{}
 	cases := 0
 	for _, entry := range entries {
@@ -986,14 +1064,7 @@ func TestEveryCaseThatBuildsNoWorldIsAccountedFor(t *testing.T) {
 				continue
 			}
 			cases++
-			buildsWorld := false
-			ast.Inspect(function.Body, func(node ast.Node) bool {
-				if identifier, isIdentifier := node.(*ast.Ident); isIdentifier && identifier.Name == "NewWorld" {
-					buildsWorld = true
-				}
-				return !buildsWorld
-			})
-			if buildsWorld {
+			if namesAWorldBuilder(function.Body, worldBuilders) {
 				continue
 			}
 			found[function.Name.Name] = true
@@ -2040,4 +2111,65 @@ func TestNothingInTheProgramConsultsATerminal(t *testing.T) {
 	if checked == 0 {
 		t.Error("this guard read no program sources, so it checked nothing; cmd/ and internal/ moved")
 	}
+}
+
+// worldBuildingFunctions returns the names of every function in this package
+// whose body reaches NewWorld, directly or through another such function.
+//
+// It is the transitive closure of "calls NewWorld", computed by widening the
+// set until it stops growing. NewWorld itself is the seed, so a function that
+// names it is in the set on the first pass and a function that names THAT one
+// joins on the second.
+func worldBuildingFunctions(t *testing.T, dir string, entries []os.DirEntry) map[string]bool {
+	t.Helper()
+
+	bodies := map[string]*ast.BlockStmt{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", path, err)
+		}
+		for _, declaration := range file.Decls {
+			if function, isFunction := declaration.(*ast.FuncDecl); isFunction && function.Body != nil {
+				bodies[function.Name.Name] = function.Body
+			}
+		}
+	}
+
+	builders := map[string]bool{"NewWorld": true}
+	for widened := true; widened; {
+		widened = false
+		for name, body := range bodies {
+			if builders[name] {
+				continue
+			}
+			if namesAWorldBuilder(body, builders) {
+				builders[name] = true
+				widened = true
+			}
+		}
+	}
+	return builders
+}
+
+// namesAWorldBuilder reports whether a function body mentions any of the given
+// names.
+//
+// An identifier scan rather than a call-expression one, which is deliberate:
+// NewWorld passed as a value, or wrapped in a closure, still runs the walk the
+// cache key depends on, and a guard that only recognized a direct call would
+// wave that through.
+func namesAWorldBuilder(body *ast.BlockStmt, builders map[string]bool) bool {
+	found := false
+	ast.Inspect(body, func(node ast.Node) bool {
+		if identifier, isIdentifier := node.(*ast.Ident); isIdentifier && builders[identifier.Name] {
+			found = true
+		}
+		return !found
+	})
+	return found
 }

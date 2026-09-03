@@ -7,6 +7,7 @@
 package ui
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 )
@@ -24,6 +25,11 @@ type IO struct {
 	Err io.Writer
 
 	writeErr error
+
+	// in buffers In across prompts. Created on the first ReadLine and kept
+	// for the rest of the run; see ReadLine for why a per-call reader loses
+	// answers.
+	in *bufio.Reader
 }
 
 // Outln and Errln write text and a newline, uncoloured, to the named stream.

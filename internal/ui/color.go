@@ -162,6 +162,10 @@ func Colorize(level Level, text string) string {
 // newline") spelling of this. Use Colorize to build a span and pass the result
 // here when a line mixes levels.
 //
+// The single exception is Prompt, and it is an exception to the NEWLINE and
+// not to the colour: appspec/07 has the user type the answer on the question's
+// own line, so that one message ends in a reset without ending in a newline.
+//
 // The newline is written OUTSIDE the reset, so a line ends in the default
 // colour rather than carrying it into whatever the terminal prints next.
 func (s *IO) Say(level Level, text string) {

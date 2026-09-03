@@ -1,12 +1,15 @@
 package app
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 
 	"github.com/promptctl/macklebox/internal/appdb"
 	"github.com/promptctl/macklebox/internal/cli"
 	"github.com/promptctl/macklebox/internal/config"
 	"github.com/promptctl/macklebox/internal/fault"
+	"github.com/promptctl/macklebox/internal/homepath"
 )
 
 // The startup stages between argv parsing and dispatch. They exist as named
@@ -53,6 +56,26 @@ func loadConfig(inv cli.Invocation) (*config.Config, error) {
 // Threading a *config.Config here would suggest otherwise.
 func assembleApplicationDatabase() (*appdb.Database, error) {
 	return appdb.Assemble(appdb.EnvironmentFromOS())
+}
+
+// resolveHome is the home directory the per-file paths of appspec/06 "Shared
+// vocabulary" are built on: "home path: $HOME/f".
+//
+// It is a startup fact of the same kind as the storage location, not a
+// property of the config, which is why it is resolved here rather than added
+// to config.Config -- appspec/03 gives that type five properties and $HOME is
+// not one of them; it is an input to resolving them.
+//
+// It re-asks a question config.Load has already answered, and cannot fail once
+// that stage has passed. That duplication is deliberate and internal/homepath
+// argues it for its other caller in the same words: "a package whose
+// correctness depends on the order its caller happens to run stages in has no
+// contract of its own to test." Here the same reasoning applies to the
+// pipeline -- the sync commands need an absolute home, and taking it on faith
+// from a stage above would make a reordering of the pipeline produce paths
+// under a relative root rather than a diagnostic.
+func resolveHome() (string, error) {
+	return homepath.Require(os.Getenv("HOME"))
 }
 
 // environmentGate runs level 1 of the lattice in appspec/01 section 4 -- the
@@ -135,7 +158,22 @@ func requireStorageRoot(root string) error {
 	// Stat and not Lstat: a symlink to the real storage directory is how a
 	// user points ~/Dropbox at a volume, and the directory it resolves to is
 	// the one the folder is created in.
-	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+	info, err := os.Stat(root)
+
+	// A stat that failed for any reason other than ENOENT has not established
+	// that the root is missing, and "Unable to find" asserts that it is. Level
+	// 2 and 3's gate carries the same split for the same reason, and
+	// folderPresent's comment argues it at length: appspec/07's table has a
+	// row for a MISSING folder and none for an unreadable one, because the
+	// reference asks Python's os.path.isdir, which answers false for every
+	// stat error alike. A storage root inside a directory without its search
+	// bit -- an ordinary way for a synced tree to arrive from another
+	// machine's account -- was reported as absent, and the user was sent to
+	// look for a directory that is sitting there.
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fault.Guardedf("Unable to inspect the storage folder: %s", err)
+	}
+	if err != nil || !info.IsDir() {
 		return fault.Guardedf("Unable to find the storage folder: %s", root)
 	}
 	return nil
