@@ -1161,26 +1161,24 @@ MUTATIONS = [
    # rig: TestTheLinkSkipHoldsWhenTheStorageRootIsReachedThroughASymlink
 
  # STILL PARKED, and the reasons are structural rather than a missing fixture.
- # Eleven of the old banner's twenty-two mutations cannot honestly be entries
+ # Nine of the old banner's twenty-two mutations cannot honestly be entries
  # today, and each would report RIG-BLIND if written -- which is a battery
  # failure dressed as a finding. Written down so the next reader does not
  # rediscover them one `make conformance` at a time.
  #
- #   Link's Clamp/Symlink order, swapped -- and this is now the ONLY survivor
- #   of the four that were parked here on the grounds that "nothing calls Link
- #   or StateOf". macklebox-link-sync-83q.2 gave both a caller: `link install`
- #   copies, deletes, symlinks and prints a trace keyed on the LinkState, so
- #   the relative-target entry and both StateOf entries are entries at the foot
- #   of this file now.
- #
- #   This one is not, because it was probed under that caller and reported
- #   RIG-BLIND. The target Link clamps is the storage copy syncfs.Copy wrote
- #   moments earlier, and Copy clamps what it writes -- so re-clamping it
- #   before or after the symlink changes nothing anyone can observe. That is
- #   the create-mode argument the two clamp entries further down turn on,
- #   arriving from a third side, and it unparks on the same ticket they do:
- #   macklebox-link-sync-83q.3's `link`, which clamps a storage file it did not
- #   just write.
+ #   Link's Clamp/Symlink order, swapped -- UNPARKED, and an entry at the foot
+ #   of this file now, so it is recorded here rather than listed. It was the
+ #   last survivor of the four parked on the grounds that "nothing calls Link
+ #   or StateOf": macklebox-link-sync-83q.2 gave both a caller -- `link
+ #   install` copies, deletes, symlinks and prints a trace keyed on the
+ #   LinkState -- which took the relative-target entry and both StateOf entries
+ #   off this list, but not this one. Probed under THAT caller it reported
+ #   RIG-BLIND, because the target Link clamps there is the storage copy
+ #   syncfs.Copy wrote moments earlier and Copy clamps what it writes, so
+ #   re-clamping before or after the symlink changed nothing observable.
+ #   macklebox-link-sync-83q.3's `link` symlinks a file ALREADY in storage,
+ #   which no copy of that run created, and the swap became observable exactly
+ #   as the paragraph that used to stand here predicted.
  #
  #   "delete of an absent path is an error" (Delete's IsNotExist arm removed).
  #   The executor only reaches Delete after a successful Lstat of the
@@ -1218,12 +1216,27 @@ MUTATIONS = [
  #   reached. (The umask angle does work in principle -- under umask 0200 the
  #   create gives 0400 and only the clamp gets to 0600 -- but a test process's
  #   umask is process-global across the whole suite, which is a large hazard to
- #   accept for two entries.) What DOES unpark them is
- #   macklebox-link-sync-83q.3's `link`: it symlinks a file ALREADY in storage,
- #   so Link clamps a target no copy of this run created and the clamp stops
- #   being a re-application of the create mode. NOT macklebox-link-sync-83q.2 --
- #   `link install` copies the target into place first, and probing these two
- #   under it changed nothing.
+ #   accept for two entries.) NOT macklebox-link-sync-83q.2 either -- `link
+ #   install` copies the target into place first, and probing these two under
+ #   it changed nothing.
+ #
+ #   THIS PARAGRAPH USED TO PREDICT THAT BOTH UNPARK ON
+ #   macklebox-link-sync-83q.3's `link`, AND IT WAS HALF WRONG. The prediction
+ #   was that `link` symlinks a file ALREADY in storage, so Link clamps a
+ #   target no copy of that run created and the clamp stops being a
+ #   re-application of the create mode. That is true of CLAMP, and it is why
+ #   "the clamp does not recurse" is an entry at the foot of this file now,
+ #   alongside the Clamp/Symlink order above.
+ #
+ #   It is not true of COPY, and "copy does not clamp the destination" STAYS
+ #   PARKED: it was written as an entry on .3, probed, and reported RIG-BLIND
+ #   again. The prediction confused the two functions. `link` NEVER CALLS
+ #   syncfs.Copy -- it reads from storage and writes one symlink -- so no
+ #   fixture under this command reaches that `return Clamp(dst)` at all, and at
+ #   every other call site dst is still absent, for the reason this bullet
+ #   opens with. What would unpark it is a caller that copies OVER an existing
+ #   destination, and the executor's delete-then-copy shape is what rules that
+ #   out; a new command does not help unless it changes that shape.
  #
  #   Their UNIT killers are recorded here because the entries above named the
  #   wrong ones and the next reader should not pay a battery round to
@@ -2067,13 +2080,21 @@ MUTATIONS = [
  # path in the diagnostic. What tells the two apart is which paths stderr
  # names: the guard has looked only at storage and names storage alone.
  #
- # Two repls, for the reason the sync.go entry above gives -- deleting the
- # guard strands "errors" and "io/fs", and link.go has no second user of
- # either. That is a fact about link.go on the day this runs, not a rule: the
- # moment anything else in the file uses them, this entry starts reporting
- # DOES-NOT-COMPILE and verifies nothing. --anchors cannot see it.
+ # ONE repl, and the paragraph that used to stand here is why it is worth a
+ # note. This was TWO: the second stripped "errors" and "io/fs" from the import
+ # block, because deleting the guard stranded them and link.go had no other
+ # user. That comment said in as many words that it was "a fact about link.go
+ # on the day this runs, not a rule", and that the moment anything else in the
+ # file used them the entry would report DOES-NOT-COMPILE and verify nothing.
+ #
+ # That moment was macklebox-link-sync-83q.3. `link`'s own home-path guard is a
+ # second user of both, so the import repl deleted imports the file still
+ # needed and the entry stopped testing anything. A full battery run caught it;
+ # --anchors could not, because both anchors still resolved. Dropping the repl
+ # is the fix rather than narrowing it -- the imports are now load-bearing for
+ # a second reason, and an entry that has to be re-derived every time the file
+ # gains an import is an entry that will be wrong again.
  ("an uninspectable mackup path is read as an absent one", [
-   repl(LK, '\t"errors"\n\t"fmt"\n\t"io/fs"\n\t"os"\n', '\t"fmt"\n\t"os"\n'),
    repl(LK, '\tif err != nil && !errors.Is(err, fs.ErrNotExist) {\n\t\treturn linkFailure(err, "inspect %s", mackupPath)\n\t}\n', "")],
    "FAIL: TestAMackupPathThatCannotBeInspectedStopsBeforeTheCopyRatherThanInsideIt"),
    # rig: TestAMackupPathThatCannotBeInspectedStopsBeforeTheCopyRatherThanInsideIt
@@ -2238,12 +2259,212 @@ MUTATIONS = [
  # reimplementation without the arm would not have bound it. "io/fs" survives
  # because AlreadyLinked is a second user of it -- which is exactly the
  # condition "an uninspectable mackup path is read as an absent one", further
- # up this section, warns is a fact about a file rather than a rule.
+ # up this section, warns is a fact about a file rather than a rule. That
+ # warning has since come true for the entry that carried it, so read this
+ # sentence as an observation about state.go today and not a guarantee.
  ("StateOf reads a broken link as a real file", [
    repl(SS, "\thome, err := os.Lstat(homePath)", "\t_, err := os.Lstat(homePath)"),
    repl(SS, "\tif home.Mode()&fs.ModeSymlink != 0 {\n\t\tif _, err := os.Stat(homePath); err != nil {\n\t\t\treturn StateBrokenLink\n\t\t}\n\t}\n", "")],
    "FAIL: TestEveryArrangementDerivesTheStateAppspec06NamesForIt"),
    # rig: TestVerboseSaysWhichStateLinkInstallDidNothingOn
+
+ # -- `link`, the second entry door (macklebox-link-sync-83q.3) --------------
+ #
+ # The command reads FROM storage and writes ONE symlink, so most of what can
+ # go wrong here is a guard that answers about the wrong end. Every entry below
+ # was probed before its expectation was written; the ones that arrived with a
+ # predicted killer and were wrong are recorded in the parked section above.
+ #
+ # FOUR of the expects here name a UNIT diagnostic and the rest name a
+ # conformance one, because `make check` runs the unit packages first and stops
+ # there on a failure, so a mutation the unit tests kill never prints a
+ # conformance diagnostic for `expect` to match. The four are the ~/Library
+ # rule, the gate level, and both clamp entries -- and one of them is not the
+ # case a reader would guess, which is why it carries a note of its own. The
+ # [rig: ...] line under every entry is the separate `make conformance` answer.
+
+ # appspec/00's two entry doors, and the collapse it calls building "a
+ # different product": this is link install's move performed by `link`. On a
+ # second machine it overwrites the first machine's file with whatever happened
+ # to be at this machine's home path -- silently, since the run still exits 0
+ # and the home path still ends up a symlink into storage.
+ ("link copies the home file into storage first", [repl(LK,
+   "\t\tif err := syncfs.Delete(homePath); err != nil {\n\t\t\treturn linkFailure(err, \"replace %s\", homePath)\n\t\t}\n",
+   "\t\tif err := syncfs.Copy(homePath, mackupPath); err != nil {\n\t\t\treturn linkFailure(err, \"copy %s to %s\", homePath, mackupPath)\n\t\t}\n\t\tif err := syncfs.Delete(homePath); err != nil {\n\t\t\treturn linkFailure(err, \"replace %s\", homePath)\n\t\t}\n")],
+   "FAIL: TestLinkMovesNothingOutOfHomeWhenItReplacesAHomeFile"),
+   # rig: TestLinkMovesNothingOutOfHomeWhenItReplacesAHomeFile,
+   #      TestLinkPromptsBeforeReplacingAHomeFileAndNamesIt,
+   #      TestLinkReplacesAForeignHomeSymlinkAsALinkAndSparesItsTarget,
+   #      TestTheForceFlagsAnswerTheLinkPromptWithoutShowingIt
+
+ # appspec/06 step 3's yes arm is "delete the home path, THEN create a symlink",
+ # and without the delete os.Symlink meets an occupied path. The user answered
+ # yes and the run fails, which is the shape a reader would least expect from
+ # dropping a delete.
+ ("link does not delete the home path it was told to replace", [repl(LK,
+   "\t\tif err := syncfs.Delete(homePath); err != nil {\n\t\t\treturn linkFailure(err, \"replace %s\", homePath)\n\t\t}\n", "")],
+   "FAIL: TestLinkPromptsBeforeReplacingAHomeFileAndNamesIt"),
+   # rig: TestLinkMovesNothingOutOfHomeWhenItReplacesAHomeFile,
+   #      TestLinkPromptsBeforeReplacingAHomeFileAndNamesIt,
+   #      TestLinkReplacesAForeignHomeSymlinkAsALinkAndSparesItsTarget,
+   #      TestTheForceFlagsAnswerTheLinkPromptWithoutShowingIt
+
+ # appspec/06's idempotency fixed point at this door: "link install / link: an
+ # already-linked file is skipped". Without the guard a second run reaches the
+ # prompt for every file it linked on the first, which with no force flag and
+ # no stdin is an unguarded end-of-input failure.
+ ("link acts on a file it has already linked", [repl(LK,
+   "\tif syncfs.AlreadyLinked(homePath, mackupPath) {\n\t\tr.trace(doingNothingLinked, homePath)\n\t\treturn nil\n\t}\n", "")],
+   "FAIL: TestASecondLinkSkipsEveryFileAndChangesNothing"),
+   # rig: TestASecondLinkSkipsEveryFileAndChangesNothing,
+   #      TestLinkAndLinkInstallAgreeOnWhatAlreadyLinkedMeans,
+   #      TestVerboseSaysWhyLinkDidNothingOnEachSkippedFile
+
+ # appspec/06 step 1's first condition. A second machine whose sync client has
+ # not brought a file down yet is the ORDINARY state, not a corner, and without
+ # this arm every such file reaches syncfs.Link -- whose clamp refuses a target
+ # that is not there, so the run stops on the first file storage lacks.
+ ("link acts when the mackup copy is missing", [repl(LK,
+   "\tif !linkableSource(mackupPath) {", "\tif false {")],
+   "FAIL: TestLinkSkipsAFileThatIsNotInStorageAndSaysNothingWithoutVerbose"),
+   # rig: TestAMackupPathThatCannotBeInspectedIsSkippedByLink,
+   #      TestEveryInvocationFormIsAcceptedAndReachesItsCommand,
+   #      TestLinkSkipsAFileThatIsNotInStorageAndSaysNothingWithoutVerbose,
+   #      TestVerboseSaysWhyLinkDidNothingOnEachSkippedFile
+
+ # The trace names the side that failed the condition, and this is the side.
+ # Told the storage copy is missing, a user goes and looks at their sync
+ # client; told the HOME path is missing, they go and look at a path whose
+ # absence is exactly what they were expecting.
+ ("link's missing-copy trace names the home path", [repl(LK,
+   "\t\tr.trace(doingNothingAbsent, mackupPath)", "\t\tr.trace(doingNothingAbsent, homePath)")],
+   "FAIL: TestVerboseSaysWhyLinkDidNothingOnEachSkippedFile"),
+   # rig: TestAMackupPathThatCannotBeInspectedIsSkippedByLink,
+   #      TestVerboseSaysWhyLinkDidNothingOnEachSkippedFile
+
+ # appspec/00 "Platform assumptions" item 2 is a rule about Linux, and applying
+ # it everywhere would make macOS -- where ~/Library/Preferences is most of
+ # what the shipped catalog manages -- sync almost nothing and exit 0.
+ #
+ # This direction is the one a battery run on macOS can see. The OTHER
+ # direction, a rule that never fires, is observable only on Linux and is
+ # deliberately not an entry: it would report SURVIVED on the machine this
+ # battery is run from. It was injected under a Linux container instead, where
+ # TestLinkSkipsALibraryPathOnLinuxAndCarriesOn failed on all four of its
+ # assertions -- the home path created, the storage mode clamped from 0644 to
+ # 0600, the skip trace absent and the rule unnamed.
+ ("the ~/Library rule is applied on every platform", [repl(LK,
+   "\treturn goos != \"linux\" || !strings.HasPrefix(relative, \"Library/\")",
+   "\t_ = goos\n\treturn !strings.HasPrefix(relative, \"Library/\")")],
+   "FAIL: TestOnlyLinuxAppliesTheLibraryRuleAndOnlyToPathsUnderIt"),
+   # rig: TestLinkLinksALibraryPathOnMacOS
+
+ # appspec/07's prompt for this command names the HOME path, because the home
+ # file is what is about to be destroyed. Naming the storage path instead tells
+ # the user the shared copy is at risk, which is the one thing appspec/06 says
+ # this command never touches.
+ ("link's replace prompt names the storage path", [repl(LK,
+   "\t\t\tlinkReplaceQuestion, typeNoun(existing), homePath))",
+   "\t\t\tlinkReplaceQuestion, typeNoun(existing), mackupPath))")],
+   "FAIL: TestLinkPromptsBeforeReplacingAHomeFileAndNamesIt"),
+   # rig: TestLinkPromptsBeforeReplacingAHomeFileAndNamesIt,
+   #      TestLinkReplacesAForeignHomeSymlinkAsALinkAndSparesItsTarget
+
+ # A declined prompt is a deliberate answer, not a failure. Counting it as one
+ # makes --force-no -- which appspec/07 defines as pre-answering every prompt
+ # with no -- end the run on its first conflict instead of skipping every one.
+ # The `return nil` is replaced rather than shadowed by an earlier return: `go
+ # vet` rejects the unreachable statement that would leave, and a mutation that
+ # does not compile proves nothing about the rig. The anchor reaches past the
+ # arm to the delete below it, because "if !replace {" alone matches link
+ # install's arm too and only the path in that delete tells the two apart.
+ ("a declined link prompt ends the run", [repl(LK,
+   "\t\t\treturn nil\n\t\t}\n\t\tif err := syncfs.Delete(homePath); err != nil {",
+   "\t\t\treturn linkFailure(fs.ErrExist, \"replace %s\", homePath)\n\t\t}\n\t\tif err := syncfs.Delete(homePath); err != nil {")],
+   "FAIL: TestDecliningTheLinkPromptLeavesTheHomeFileAloneAndExitsZero"),
+   # rig: TestDecliningTheLinkPromptLeavesTheHomeFileAloneAndExitsZero,
+   #      TestTheForceFlagsAnswerTheLinkPromptWithoutShowingIt
+
+ # appspec/06 gives this command a three-line verbose form of its own, and the
+ # tidy-up is to make it the four-line one every other command prints. The
+ # progressForm template exists precisely so that shape is data; this is the
+ # mutation that says so.
+ ("link's verbose progress uses the copy commands' shape", [repl(LK,
+   "var linkProgress = progressForm{\n\tshort: \"Restoring\",\n\tlong:  \"Restoring\\n  linking %s\\n  to      %s ...\",\n}",
+   "var linkProgress = copyProgress(\"Restoring\", \"Restoring\")")],
+   "FAIL: TestLinksVerboseProgressUsesItsOwnThreeLineShape"),
+   # rig: TestLinksVerboseProgressUsesItsOwnThreeLineShape
+
+ # appspec/00 promise 5 at this door. The stop is after the progress line, so a
+ # dry run that printed nothing fails the promise's other half and one that
+ # printed and then acted fails this one.
+ ("link's dry-run stop is dropped", [repl(LK,
+   "\tr.progress(linkProgress, relative, homePath, mackupPath)\n\tif r.dryRun {\n\t\treturn nil\n\t}",
+   "\tr.progress(linkProgress, relative, homePath, mackupPath)")],
+   "FAIL: TestLinkDryRunStopsAtTheProgressLineAndMutatesNothing"),
+   # rig: TestLinkDryRunStopsAtTheProgressLineAndMutatesNothing
+
+ # The destination guard, and the mutation is the reference's own behaviour:
+ # os.path.exists is false for a stat that failed, so the procedure takes step
+ # 4 and creates the link with no prompt. Weaker than link install's version of
+ # this guard -- os.Symlink refuses an occupied path, so nothing is lost -- and
+ # the difference the rig can see is WHICH paths the diagnostic names.
+ ("an uninspectable home path is read as an absent one by link", [repl(LK,
+   "\texisting, err := os.Lstat(homePath)\n\tif err != nil && !errors.Is(err, fs.ErrNotExist) {\n\t\treturn linkFailure(err, \"inspect %s\", homePath)\n\t}\n",
+   "\texisting, err := os.Lstat(homePath)\n")],
+   "FAIL: TestAHomePathThatCannotBeInspectedStopsBeforeTheLinkRatherThanInsideIt"),
+   # rig: TestAHomePathThatCannotBeInspectedStopsBeforeTheLinkRatherThanInsideIt
+
+ # appspec/01 section 4's lattice, one level off in the other direction from
+ # link install's entry. `link` REQUIRES the folder; offering to create it
+ # turns a machine with nothing to join into a run that creates an empty folder
+ # and links nothing.
+ #
+ # THE UNIT KILLER IS SIDEWAYS AND SURPRISING, and it is the observed one, so
+ # do not "correct" it to the case whose name says gate.
+ # TestFatalDiagnosticsAreColoredOnStderr runs `link` against a world with no
+ # Mackup folder purely to read the COLOUR of a fatal line, and under this
+ # mutation the ensure gate prompts where the require gate failed -- so the
+ # fatal line it was reading is not printed at all. That is a real kill: a case
+ # about colour is entitled to depend on the run still being fatal.
+ # TestLinkRequiresTheMackupFolderAndDoesNotOfferToCreateIt is the case that
+ # kills it ON PURPOSE, and `make check` never reaches it.
+ ("the link gate offers to create the Mackup folder", [repl(LK,
+   "\tif err := requireMackupFolder(run.folder); err != nil {",
+   "\tif err := ensureMackupFolder(run.confirm, run.folder); err != nil {")],
+   "FAIL: TestFatalDiagnosticsAreColoredOnStderr"),
+   # rig: TestLinkRequiresTheMackupFolderAndDoesNotOfferToCreateIt
+
+ # appspec/06 "Environment gate per command": a named application is validated
+ # BEFORE the gate, and `link` is one of the five the rule names. Gating first
+ # reports a missing Mackup folder for a run the user never asked for.
+ ("link gates before validating the application name", [repl(LK,
+   "\tkeys, known := resolveScope(p)\n\tif !known {\n\t\treturn ExitFailure\n\t}\n\n\trun := &linkRun{executor: newExecutor(p)}\n\tif err := requireMackupFolder(run.folder); err != nil {\n\t\treturn reportFatal(p.streams, err)\n\t}",
+   "\trun := &linkRun{executor: newExecutor(p)}\n\tif err := requireMackupFolder(run.folder); err != nil {\n\t\treturn reportFatal(p.streams, err)\n\t}\n\tkeys, known := resolveScope(p)\n\tif !known {\n\t\treturn ExitFailure\n\t}")],
+   "FAIL: TestLinkRefusesAnUnknownApplicationBeforeTheGate"),
+   # rig: TestLinkRefusesAnUnknownApplicationBeforeTheGate
+
+ # THE TWO UNPARKS. Both are clamp mutations the parked banner above says
+ # become observable under `link`, because it clamps a storage path no copy of
+ # the same run created. Read that banner before touching these.
+ #
+ # It predicted THREE, and the third is the one to read it for. "copy does not
+ # clamp the destination" was written here as an entry on this ticket, probed,
+ # and reported RIG-BLIND -- `link` never calls syncfs.Copy at all, so no
+ # fixture under this command reaches the clamp that entry deletes. It was
+ # removed rather than left to report RIG-BLIND on every run, and the banner
+ # above now records why the prediction was half wrong.
+ ("the clamp runs after the link is created", [repl(SY,
+   "\tif err := Clamp(target); err != nil {\n\t\treturn err\n\t}\n\treturn os.Symlink(target, linkPath)",
+   "\tif err := os.Symlink(target, linkPath); err != nil {\n\t\treturn err\n\t}\n\treturn Clamp(target)")],
+   "FAIL: TestLinkClampsItsTargetBeforeCreatingTheLink"),
+   # rig: TestLinkClampsItsStorageTargetBeforeTryingToCreateTheLink
+
+ ("the clamp does not recurse", [repl(SY,
+   "\t\tif err := os.Chmod(path, dirMode); err != nil {\n\t\t\treturn err\n\t\t}\n\t\treturn clampTree(path)",
+   "\t\treturn os.Chmod(path, dirMode)")],
+   "FAIL: TestLinkClampsItsTargetBeforeCreatingTheLink"),
+   # rig: TestLinkClampsTheStorageTreeItPointsAtWithoutRewritingIt
 ]
 
 
