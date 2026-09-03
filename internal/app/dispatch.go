@@ -6,10 +6,11 @@ import (
 )
 
 // dispatch runs the subcommand argv selected. The two enumeration commands of
-// appspec/05 and the one copy operation of appspec/06 are implemented; each
-// remaining arm is filled in by the ticket named beside it, and until then
-// reports that it is not implemented on stderr and exits non-zero, so no
-// caller can mistake an unimplemented verb for a completed action.
+// appspec/05, the one copy operation of appspec/06 and its `link install` are
+// implemented; each remaining arm is filled in by the ticket named beside it,
+// and until then reports that it is not implemented on stderr and exits
+// non-zero, so no caller can mistake an unimplemented verb for a completed
+// action.
 //
 // Everything the startup pipeline resolved arrives as one value: every command
 // reads the same application database, and appspec/01 section 4 assembles it
@@ -22,6 +23,13 @@ import (
 // dispatch itself: "any divergence between backup and restore other than
 // {direction, user-facing wording, the one link-skip} is a defect", and two
 // arms calling two functions is how that divergence starts.
+//
+// link install is a call of its own and NOT a third direction of that record.
+// appspec/00's two-strategies section makes copy and link distinct products,
+// and appspec/06 gives link install a per-file procedure with an operation the
+// copy one does not have -- it deletes the home file and puts a symlink in its
+// place. Parameterizing one function to do both would put that delete behind a
+// flag inside the procedure appspec/01 section 1 says must not branch.
 func dispatch(p pipeline) int {
 	inv, streams, apps := p.inv, p.streams, p.apps
 	switch inv.Cmd {
@@ -41,9 +49,7 @@ func dispatch(p pipeline) int {
 	case cli.CmdRestore:
 		return runSync(p, restoreDirection)
 	case cli.CmdLinkInstall:
-		// TODO(macklebox-link-sync-83q.2): move home files into storage,
-		// symlink them back.
-		return notImplemented(inv, streams)
+		return runLinkInstall(p)
 	case cli.CmdLink:
 		// TODO(macklebox-link-sync-83q.3): symlink files already in storage
 		// into home, moving nothing out of home.

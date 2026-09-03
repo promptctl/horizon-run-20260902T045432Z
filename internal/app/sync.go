@@ -31,13 +31,16 @@ import (
 // behavioural asymmetry.
 //
 // This is also where the system-wide machinery of appspec/01 is first used:
-// the two-level sorted fan-out (section 1), single-application scoping
-// (section 3, in scope.go), the Mackup-folder gate (section 4, in folder.go),
-// the one confirmation policy (section 3, in confirm.go), dry-run and verbose
-// (section 3), and the partial-failure contract (section 5). None of it is
-// backup-specific: appspec/01 says the five sync commands are "five leaves on
-// one tree, not five independent programs", and the link tickets plug into
-// these same functions.
+// the two-level sorted fan-out and the per-application verbose header (section
+// 1, in executor.go), single-application scoping (section 3, in scope.go), the
+// Mackup-folder gate (section 4, in folder.go), the one confirmation policy
+// (section 3, in confirm.go), dry-run and verbose (section 3), and the
+// partial-failure contract (section 5). None of it is backup-specific:
+// appspec/01 says the five sync commands are "five leaves on one tree, not
+// five independent programs", so everything on that list but the last item is
+// in executor.go, which link.go runs too. The partial-failure contract is the
+// exception and stays here, because appspec/01 section 5 gives it to the copy
+// commands ALONE -- the link commands fail hard mid-run instead.
 
 // A folderGate names which level of appspec/01 section 4's lattice a direction
 // runs. It is part of the direction record because the fifth gate is the ONLY
@@ -61,6 +64,10 @@ type direction struct {
 	fromHome bool
 
 	// verb is the progress verb: "Backing up" or "Recovering".
+	//
+	// One word and not a progressVerbs pair, because appspec/06 gives the copy
+	// operation the same word in both forms of its progress line. link install
+	// is the command that needs two, and it says so where it names its own.
 	verb string
 	// driftPhrasing fills the "<f> differs between <...>:" header: "home and
 	// Mackup" or "Mackup and home", source first. The diff below it runs the
@@ -127,36 +134,30 @@ func (d direction) forceHint() string {
 	return ""
 }
 
-// A syncRun is one invocation of the copy operation: the direction, the two
-// run-mode booleans, the confirmation policy, and the failures collected so
-// far.
+// A syncRun is one invocation of the copy operation: the shared executor, the
+// direction, and the failures collected so far.
 //
-// The two booleans and the policy are fields rather than reads of a global,
-// because appspec/01 section 3 says the confirmation decision "is passed as
-// data, not read from an ambient global" and gives dry-run and verbose as one
-// uniform rule each. Threading them means a test can build a run in any of the
-// eight combinations without touching the process.
+// Everything a run needs that is not specific to copying -- the streams, the
+// confirmation policy, the application database, the two roots, dry-run and
+// verbose -- is the embedded executor's, because those are the same facts read
+// the same way by all five sync commands (appspec/01 section 1). What is left
+// here is exactly what appspec/06 and appspec/01 section 5 make specific to
+// backup and restore.
 type syncRun struct {
-	dir     direction
-	streams *ui.IO
-	confirm confirmer
-	apps    *appdb.Database
+	*executor
 
-	// home and folder are the two roots of appspec/06 "Shared vocabulary":
-	// $HOME and <storage-root>/<directory>.
-	home   string
-	folder string
-
-	dryRun  bool
-	verbose bool
+	dir direction
 
 	// failed is appspec/06's partial-failure contract as data. "Failures flow
 	// up as data, not as control flow -- the loop never aborts and the process
 	// never exits from inside the per-file copy."
+	//
+	// It is here and not on the executor because appspec/01 section 5 gives
+	// this contract to backup and restore ALONE: "link commands have no
+	// failure-aggregation path". A slice on the shared executor would offer
+	// the three link commands somewhere to put failures they are specified not
+	// to collect.
 	failed []string
-	// pendingHeader is the application whose verbose header is owed but not yet
-	// printed, or "" when none is. See header and flushHeader.
-	pendingHeader string
 }
 
 // runSync is the whole of backup and restore: gate, fan out, aggregate, exit.
@@ -167,29 +168,17 @@ type syncRun struct {
 // showing a prompt, which is one clause of this ticket's done-claim and the
 // reason folder.go is not called from the startup pipeline.
 func runSync(p pipeline, dir direction) int {
-	keys, known := selectApplications(p.inv, p.cfg, p.apps)
+	keys, known := resolveScope(p)
 	if !known {
-		// The same token, level and stream `show` uses for the same condition
-		// -- appspec/07's table gives it one row, not one per command.
-		p.streams.Say(ui.Fatal, UnsupportedApplicationPrefix+p.inv.Application)
 		return ExitFailure
 	}
 
-	run := &syncRun{
-		dir:     dir,
-		streams: p.streams,
-		confirm: confirmer{policy: policyOf(p.inv.Opts), streams: p.streams},
-		apps:    p.apps,
-		home:    p.home,
-		folder:  p.cfg.MackupFolder(),
-		dryRun:  p.inv.Opts.DryRun,
-		verbose: p.inv.Opts.Verbose,
-	}
+	run := &syncRun{executor: newExecutor(p), dir: dir}
 
 	if err := run.gate(); err != nil {
 		return reportFatal(p.streams, err)
 	}
-	if err := run.fanOut(keys); err != nil {
+	if err := run.fanOut(keys, run.file); err != nil {
 		// The one way out of the loop that is not a per-file failure: end of
 		// input at a prompt (appspec/07, unguarded). Everything a copy can do
 		// wrong is already in run.failed by now -- which is why the summary is
@@ -210,90 +199,6 @@ func (r *syncRun) gate() error {
 		return ensureMackupFolder(r.confirm, r.folder)
 	}
 	return requireMackupFolder(r.folder)
-}
-
-// fanOut is the two-level loop of appspec/01 section 1: "applications in sorted
-// key order; files within each application in sorted path order; each file
-// handled independently."
-//
-// Neither level sorts. appdb.Keys and appdb.Files both return sorted values and
-// config.Scope preserves the order it is given, so the guarantee is made once
-// by the database rather than re-made here where it could disagree.
-//
-// It returns an error only for a failure that ends the run. A per-file copy
-// failure is recorded and the loop continues -- that is appspec/06's
-// partial-failure contract, and writing it as a returned error would be the
-// exact "failure as control flow" the contract forbids.
-func (r *syncRun) fanOut(keys []string) error {
-	for _, key := range keys {
-		files, known := r.apps.Files(key)
-		if !known {
-			// An allowlisted key with no definition. config.Scope already
-			// promises its result is a subset of the keys it was given, so
-			// this is unreachable today; skipping rather than failing is the
-			// answer that keeps a configuration naming an application this
-			// build does not ship from aborting a whole backup.
-			continue
-		}
-		r.header(key)
-		for _, relative := range files {
-			if err := r.file(relative); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// header records which application's verbose header is owed. It does not print
-// it; flushHeader does, on that application's first line of output.
-//
-// Deferred rather than printed, because printing it here says an application's
-// name for an application that turns out to have nothing to do -- which is the
-// hazard the old comment on this function named and then did not avoid.
-// appspec/06's step 1 skips a file whose source does not exist SILENTLY, so on
-// an unscoped run the overwhelming majority of the catalog produces no output
-// at all: measured on a home with one real file, an eager header gave 623
-// stdout lines of which 614 were headers. The nine lines that were the actual
-// run are what verbose exists to show.
-//
-// Nothing in the specification asks for the eager shape. appspec/01 section 3
-// says verbose "swaps short progress lines for long ones (full absolute
-// source/destination paths, a per-app header rule)" and appspec/07 gives the
-// header its colours; neither promises one per catalog key.
-func (r *syncRun) header(key string) {
-	r.pendingHeader = key
-}
-
-// flushHeader prints the per-application verbose header of appspec/07: "per-app
-// verbose header uses blue (34) rules around a bold app name".
-//
-// One line, and one Say, built from two levels with ui.Colorize -- which is
-// what that function is exported for, and the shape its doc names. Written as
-// three Says it would be three messages; written as one uncoloured string it
-// would lose the bold name appspec/07 asks for.
-//
-// Called from trace and progress and from nowhere else: they are the only two
-// that can produce an application's first STDOUT line, which is what this
-// header groups. The drift header and the replace prompt are reachable only
-// after progress has run for the same file. fail is NOT -- the uninspectable-
-// destination guard reaches it with no progress line before it -- and is left
-// unflushed deliberately: it writes to stderr, and names both paths in full,
-// so it needs no header to say which application it belongs to. Flushing there
-// would put a header on stdout with nothing under it, which is the one thing
-// TestTheVerboseHeaderIsPrintedOnlyForAnApplicationThatPrintsSomething
-// forbids outright.
-func (r *syncRun) flushHeader() {
-	if !r.verbose || r.pendingHeader == "" {
-		return
-	}
-	key := r.pendingHeader
-	r.pendingHeader = ""
-	name, known := r.apps.Name(key)
-	if !known {
-		name = key
-	}
-	r.streams.Say(ui.AppRule, "--- "+ui.Colorize(ui.AppName, name)+" ---")
 }
 
 // file is appspec/06 "The shared per-file procedure", step for step.
@@ -459,46 +364,16 @@ func (r *syncRun) file(relative string) error {
 	return nil
 }
 
-// progress prints appspec/06's progress line, in whichever of its two forms
-// the run mode calls for.
+// progress prints this direction's progress line through the executor.
 //
-// Short: "<verb> <f> ...". Verbose: the four-line form with absolute paths,
-// which appspec/06 writes as "<verb>\n  <src>\n  to\n  <dst> ...".
-//
-// One Say per line, for the reason reportFatal and list split theirs:
-// appspec/07 promises "every colored string is terminated with a reset", and a
-// multi-line message coloured as one string opens a colour on its middle lines
-// that it never closes.
-//
-// ui.Progress in both forms. Verbose changes WHICH progress line is printed,
-// not what class of message it is -- appspec/01 section 3 says verbose "swaps
-// short progress lines for long ones", and appspec/07 lists the per-file
-// progress lines under stdout without qualification. Only the skip traces are
-// ui.Verbose.
+// appspec/06 gives backup and restore the same word in both forms, so the pair
+// handed over holds one word twice. Spelled here rather than stored on the
+// direction record, because the record is appspec/06's direction TABLE and that
+// table has one verb column; a second, always-equal column would read as a
+// difference between backup and restore that appspec/01 section 1 says must not
+// exist.
 func (r *syncRun) progress(relative, src, dst string) {
-	r.flushHeader()
-	if !r.verbose {
-		r.streams.Sayf(ui.Progress, "%s %s ...", r.dir.verb, relative)
-		return
-	}
-	r.streams.Say(ui.Progress, r.dir.verb)
-	r.streams.Say(ui.Progress, "  "+src)
-	r.streams.Say(ui.Progress, "  to")
-	r.streams.Sayf(ui.Progress, "  %s ...", dst)
-}
-
-// trace prints one of the two verbose-only skip traces of appspec/06.
-//
-// Verbose is observationally pure (appspec/01 section 3: "it changes only what
-// is printed, never what is done or the exit code"), which is why this is the
-// whole of what the flag does at a skip: the caller has already decided to
-// skip, and this only says so.
-func (r *syncRun) trace(format string, args ...any) {
-	if !r.verbose {
-		return
-	}
-	r.flushHeader()
-	r.streams.Sayf(ui.Verbose, format, args...)
+	r.executor.progress(progressVerbs{short: r.dir.verb, long: r.dir.verb}, relative, src, dst)
 }
 
 // copy performs the one mutation of the per-file procedure and records a

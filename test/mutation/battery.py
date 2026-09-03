@@ -53,6 +53,11 @@ FILES = ["test/conformance/harness_test.go", "test/conformance/argv_test.go",
          "internal/homepath/homepath.go",
          "internal/app/enumerate.go", "internal/app/stages.go",
          "internal/app/sync.go", "internal/app/folder.go",
+         # appspec/01 section 1's "one uniform per-file executor", split out of
+         # sync.go when link install landed, and link install itself. The
+         # per-application verbose header's entry moved with the code; the
+         # link entries are new.
+         "internal/app/executor.go", "internal/app/link.go",
          # The catalog is DATA, and these two are the first non-.go entries in
          # this list. A mutation to a definition file is only worth writing now
          # that `list` and `show` print what it holds -- see the appspec/05
@@ -115,6 +120,8 @@ EN = "internal/app/enumerate.go"
 SG = "internal/app/stages.go"
 SN = "internal/app/sync.go"
 FD = "internal/app/folder.go"
+EX = "internal/app/executor.go"
+LK = "internal/app/link.go"
 CT = "internal/catalog/catalog.go"
 MK = "internal/catalog/applications/mackup.cfg"
 SY = "internal/syncfs/syncfs.go"
@@ -1261,9 +1268,9 @@ MUTATIONS = [
  # home nearly every one of the ~614 catalog keys prints nothing, and a header
  # per key gave 623 stdout lines of which 614 were headers. This mutation is one
  # line and restores exactly that.
- ("the verbose header is printed eagerly", [repl(SN,
-   "func (r *syncRun) header(key string) {\n\tr.pendingHeader = key\n}",
-   "func (r *syncRun) header(key string) {\n\tr.pendingHeader = key\n\tr.flushHeader()\n}")],
+ ("the verbose header is printed eagerly", [repl(EX,
+   "func (e *executor) header(key string) {\n\te.pendingHeader = key\n}",
+   "func (e *executor) header(key string) {\n\te.pendingHeader = key\n\te.flushHeader()\n}")],
    "FAIL: TestTheVerboseHeaderIsPrintedOnlyForAnApplicationThatPrintsSomething"),
    # rig: TestTheVerboseHeaderIsPrintedOnlyForAnApplicationThatPrintsSomething
 

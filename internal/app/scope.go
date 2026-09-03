@@ -4,6 +4,7 @@ import (
 	"github.com/promptctl/macklebox/internal/appdb"
 	"github.com/promptctl/macklebox/internal/cli"
 	"github.com/promptctl/macklebox/internal/config"
+	"github.com/promptctl/macklebox/internal/ui"
 )
 
 // The selector of appspec/01-architecture.md section 1: "scope = (allowlist or
@@ -57,4 +58,31 @@ func selectApplications(inv cli.Invocation, cfg *config.Config, apps *appdb.Data
 		return nil, false
 	}
 	return []string{inv.Application}, true
+}
+
+// resolveScope selects the applications one sync command acts on, and writes
+// appspec/07's refusal when the run named an application the database does not
+// hold.
+//
+// The refusal is here rather than at each command, because appspec/07's error
+// table gives the condition ONE row -- "Named application unknown | stderr | 1 |
+// Unsupported application: <name>" -- not one row per command, and because the
+// order it enforces is contract: appspec/06 "Environment gate per command" says
+// that when an application is named "its validity is checked BEFORE this gate,
+// so an unknown app name fails ... before any folder is created or prompt
+// shown". A command that called selectApplications and then its gate could get
+// that order right; five commands each calling both is five chances to get it
+// wrong, and the failure is silent -- the run still refuses the name, just
+// after prompting the user about a folder it then does not use.
+//
+// It reports false when the run must stop, so the caller's whole obligation is
+// to return ExitFailure. Nothing further is printed: the token is already out.
+func resolveScope(p pipeline) ([]string, bool) {
+	keys, known := selectApplications(p.inv, p.cfg, p.apps)
+	if !known {
+		// The same token, level and stream `show` uses for the same condition.
+		p.streams.Say(ui.Fatal, UnsupportedApplicationPrefix+p.inv.Application)
+		return nil, false
+	}
+	return keys, true
 }
