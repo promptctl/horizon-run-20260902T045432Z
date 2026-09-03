@@ -1007,6 +1007,29 @@ func (w *World) UseResolvableStorage() string {
 	return root
 }
 
+// UseMackupFolder gives the world a resolvable storage root AND the Mackup
+// folder inside it, and returns that folder.
+//
+// appspec/01 section 4 makes the Mackup folder a FIFTH gate, and it is the only
+// per-command one: backup and link install ENSURE it exists, prompting to
+// create it when it does not, while restore, link and link uninstall REQUIRE it
+// and fail when it does not. A world built with UseResolvableStorage alone is
+// therefore in a state where backup stops to ask a question and restore
+// refuses, which is correct and is exactly what a case about something else
+// does not want to observe.
+//
+// The name is the default sub-directory of appspec/03 -- "Mackup" when
+// [storage] directory is absent -- so a case that also sets `directory` must
+// create its own folder rather than calling this.
+func (w *World) UseMackupFolder() string {
+	w.t.Helper()
+	folder := filepath.Join(w.UseResolvableStorage(), "Mackup")
+	if err := os.MkdirAll(folder, 0o700); err != nil {
+		w.t.Fatalf("creating the Mackup folder: %v", err)
+	}
+	return folder
+}
+
 // Run executes the command with no input available on stdin.
 func (w *World) Run(args ...string) Result { return w.RunWithInput("", args...) }
 

@@ -7,6 +7,7 @@ import (
 	"github.com/promptctl/macklebox/internal/cli"
 	"github.com/promptctl/macklebox/internal/config"
 	"github.com/promptctl/macklebox/internal/fault"
+	"github.com/promptctl/macklebox/internal/homepath"
 )
 
 // The startup stages between argv parsing and dispatch. They exist as named
@@ -53,6 +54,26 @@ func loadConfig(inv cli.Invocation) (*config.Config, error) {
 // Threading a *config.Config here would suggest otherwise.
 func assembleApplicationDatabase() (*appdb.Database, error) {
 	return appdb.Assemble(appdb.EnvironmentFromOS())
+}
+
+// resolveHome is the home directory the per-file paths of appspec/06 "Shared
+// vocabulary" are built on: "home path: $HOME/f".
+//
+// It is a startup fact of the same kind as the storage location, not a
+// property of the config, which is why it is resolved here rather than added
+// to config.Config -- appspec/03 gives that type five properties and $HOME is
+// not one of them; it is an input to resolving them.
+//
+// It re-asks a question config.Load has already answered, and cannot fail once
+// that stage has passed. That duplication is deliberate and internal/homepath
+// argues it for its other caller in the same words: "a package whose
+// correctness depends on the order its caller happens to run stages in has no
+// contract of its own to test." Here the same reasoning applies to the
+// pipeline -- the sync commands need an absolute home, and taking it on faith
+// from a stage above would make a reordering of the pipeline produce paths
+// under a relative root rather than a diagnostic.
+func resolveHome() (string, error) {
+	return homepath.Require(os.Getenv("HOME"))
 }
 
 // environmentGate runs level 1 of the lattice in appspec/01 section 4 -- the

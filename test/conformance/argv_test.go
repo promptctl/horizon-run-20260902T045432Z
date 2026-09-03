@@ -394,18 +394,26 @@ func TestEveryInvocationFormIsAcceptedAndReachesItsCommand(t *testing.T) {
 	// when the program is broken in some other way, or prints its usage block
 	// under a different first word.
 	//
-	// The two enumeration forms have landed and are asserted by what they DO
-	// -- that is the replacement ExpectNotImplemented's doc promises for each
-	// use "as that command's ticket lands", and it is a stronger claim than
-	// the placeholder made. The five sync forms still report themselves
-	// unimplemented, from dispatch, which is the same positive assertion in
-	// the only shape available to a command whose ticket is still open.
+	// The two enumeration forms and the two copy forms have landed and are
+	// asserted by what they DO -- that is the replacement
+	// ExpectNotImplemented's doc promises for each use "as that command's
+	// ticket lands", and it is a stronger claim than the placeholder made. The
+	// three link forms still report themselves unimplemented, from dispatch,
+	// which is the same positive assertion in the only shape available to a
+	// command whose ticket is still open.
 	//
 	// Each world needs a resolvable config and a storage root: appspec/02 puts
 	// the config gate before dispatch for every subcommand and appspec/01
 	// section 4 puts the environment gate there too, so without them the run
 	// dies at a gate and this case would report that the parser rejected a
 	// form it accepted perfectly. UseResolvableStorage supplies both.
+	//
+	// The Mackup folder is created too, because backup and restore each run a
+	// FIFTH gate (appspec/01 section 4 level 2 and 3) that this case is not
+	// about: without it backup would stop to ask whether to create the folder
+	// and, with stdin at end-of-input, fail there -- reported here as a
+	// rejected invocation form, which is the misdiagnosis this comment exists
+	// to prevent.
 	for _, test := range []struct {
 		args []string
 		cmd  string
@@ -415,10 +423,10 @@ func TestEveryInvocationFormIsAcceptedAndReachesItsCommand(t *testing.T) {
 	}{
 		{args: []string{"list"}, cmd: "list", done: true},
 		{args: []string{"show", "vim"}, cmd: "show", done: true},
-		{args: []string{"backup"}, cmd: "backup"},
-		{args: []string{"backup", "vim"}, cmd: "backup"},
-		{args: []string{"restore"}, cmd: "restore"},
-		{args: []string{"restore", "vim"}, cmd: "restore"},
+		{args: []string{"backup"}, cmd: "backup", done: true},
+		{args: []string{"backup", "vim"}, cmd: "backup", done: true},
+		{args: []string{"restore"}, cmd: "restore", done: true},
+		{args: []string{"restore", "vim"}, cmd: "restore", done: true},
 		{args: []string{"link"}, cmd: "link"},
 		{args: []string{"link", "vim"}, cmd: "link"},
 		{args: []string{"link", "install"}, cmd: "link install"},
@@ -427,7 +435,7 @@ func TestEveryInvocationFormIsAcceptedAndReachesItsCommand(t *testing.T) {
 		{args: []string{"link", "uninstall", "vim"}, cmd: "link uninstall"},
 	} {
 		world := NewWorld(t)
-		world.UseResolvableStorage()
+		world.UseMackupFolder()
 		if test.done {
 			world.Run(test.args...).ExpectExit(0).ExpectSilentStderr()
 			continue
@@ -446,17 +454,18 @@ func TestOptionsAreAcceptedOnEitherSideOfTheSubcommand(t *testing.T) {
 	// the remaining forms pin that choice so it cannot be lost by accident,
 	// not because the spec requires it.
 	//
-	// The config gate is satisfied for the same reason it is in the case
-	// above: an option accepted on either side of the subcommand is only
-	// observable once the run gets far enough to reach the subcommand.
+	// The config gate and the Mackup-folder gate are satisfied for the same
+	// reason they are in the case above: an option accepted on either side of
+	// the subcommand is only observable once the run gets far enough to reach
+	// the subcommand.
 	for _, args := range [][]string{
 		{"-f", "-n", "-v", "-r", "backup", "vim"},
 		{"backup", "vim", "--force", "--dry-run", "--verbose", "--root"},
 		{"--force", "backup", "--dry-run", "vim", "-vr"},
 	} {
 		world := NewWorld(t)
-		world.UseResolvableStorage()
-		world.Run(args...).ExpectNotImplemented("backup")
+		world.UseMackupFolder()
+		world.Run(args...).ExpectExit(0).ExpectSilentStderr()
 	}
 }
 
@@ -959,6 +968,25 @@ func TestEveryCaseThatBuildsNoWorldIsAccountedFor(t *testing.T) {
 		t.Fatalf("reading %s: %v", dir, err)
 	}
 
+	// The set of functions in this package that reach NewWorld, computed
+	// before the cases are checked, so that a case building its world through
+	// a HELPER counts as building one.
+	//
+	// The guard used to look for the identifier NewWorld in the case body
+	// alone, and that was right about the hazard and wrong about the shape: a
+	// helper like newSyncWorld calls NewWorld on the case's behalf, so
+	// readImplementationSources DOES run and the result IS in the cache key,
+	// while the guard reported otherwise. Adding fourteen such cases to
+	// casesThatBuildNoWorld would have been the wrong repair twice over --
+	// each entry is a standing claim that the case does not observe the
+	// program, and every one of them does.
+	//
+	// A fixed point rather than one level, because a helper is free to call
+	// another helper, and a guard that handles exactly the depth in the tree
+	// today is one that reports a false failure the first time someone adds a
+	// layer.
+	worldBuilders := worldBuildingFunctions(t, dir, entries)
+
 	found := map[string]bool{}
 	cases := 0
 	for _, entry := range entries {
@@ -986,14 +1014,7 @@ func TestEveryCaseThatBuildsNoWorldIsAccountedFor(t *testing.T) {
 				continue
 			}
 			cases++
-			buildsWorld := false
-			ast.Inspect(function.Body, func(node ast.Node) bool {
-				if identifier, isIdentifier := node.(*ast.Ident); isIdentifier && identifier.Name == "NewWorld" {
-					buildsWorld = true
-				}
-				return !buildsWorld
-			})
-			if buildsWorld {
+			if namesAWorldBuilder(function.Body, worldBuilders) {
 				continue
 			}
 			found[function.Name.Name] = true
@@ -2040,4 +2061,65 @@ func TestNothingInTheProgramConsultsATerminal(t *testing.T) {
 	if checked == 0 {
 		t.Error("this guard read no program sources, so it checked nothing; cmd/ and internal/ moved")
 	}
+}
+
+// worldBuildingFunctions returns the names of every function in this package
+// whose body reaches NewWorld, directly or through another such function.
+//
+// It is the transitive closure of "calls NewWorld", computed by widening the
+// set until it stops growing. NewWorld itself is the seed, so a function that
+// names it is in the set on the first pass and a function that names THAT one
+// joins on the second.
+func worldBuildingFunctions(t *testing.T, dir string, entries []os.DirEntry) map[string]bool {
+	t.Helper()
+
+	bodies := map[string]*ast.BlockStmt{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", path, err)
+		}
+		for _, declaration := range file.Decls {
+			if function, isFunction := declaration.(*ast.FuncDecl); isFunction && function.Body != nil {
+				bodies[function.Name.Name] = function.Body
+			}
+		}
+	}
+
+	builders := map[string]bool{"NewWorld": true}
+	for widened := true; widened; {
+		widened = false
+		for name, body := range bodies {
+			if builders[name] {
+				continue
+			}
+			if namesAWorldBuilder(body, builders) {
+				builders[name] = true
+				widened = true
+			}
+		}
+	}
+	return builders
+}
+
+// namesAWorldBuilder reports whether a function body mentions any of the given
+// names.
+//
+// An identifier scan rather than a call-expression one, which is deliberate:
+// NewWorld passed as a value, or wrapped in a closure, still runs the walk the
+// cache key depends on, and a guard that only recognized a direct call would
+// wave that through.
+func namesAWorldBuilder(body *ast.BlockStmt, builders map[string]bool) bool {
+	found := false
+	ast.Inspect(body, func(node ast.Node) bool {
+		if identifier, isIdentifier := node.(*ast.Ident); isIdentifier && builders[identifier.Name] {
+			found = true
+		}
+		return !found
+	})
+	return found
 }
