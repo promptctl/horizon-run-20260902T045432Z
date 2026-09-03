@@ -1327,16 +1327,22 @@ MUTATIONS = [
  # not the same question: a stat that failed for any reason other than ENOENT
  # answered neither branch, and the branch it fell into was step 4 -- no
  # comparison, no diff, no replace prompt, straight to syncfs.Copy, which does
- # not require an absent destination. Two repls, because dropping the guard
- # leaves "errors" and "io/fs" unused and an entry that cannot compile reports
- # nothing about the suite.
+ # not require an absent destination.
+ #
+ # ONE repl, and it was two until round 7. Deleting the guard used to strand
+ # "errors" and "io/fs", so this entry dropped them with it; sourcePresent is a
+ # second user of both now, and dropping them is what breaks the build -- the
+ # entry reported DOES-NOT-COMPILE, which verifies nothing about the guard it
+ # exists for. An import repl is only ever right while the mutated code is the
+ # file's ONLY user of what it removes, and that is a fact about the file on the
+ # day the entry runs, not the day it was written. --anchors cannot see this:
+ # both repls still resolve, and the breakage is at compile time. Re-injecting
+ # every entry that names a file you edited is what catches it.
  #
  # `expect` is the CONFORMANCE diagnostic, for the reason the sync.go section
  # above gives and probed the same way: `go test ./internal/...` is green under
  # this mutation, so `make check` carries on to the conformance stage.
  ("an uninspectable destination is read as an absent one", [
-   repl(SN, "\t\"errors\"\n\t\"fmt\"\n\t\"io/fs\"\n\t\"os\"\n",
-            "\t\"fmt\"\n\t\"os\"\n"),
    repl(SN, "\tif err != nil && !errors.Is(err, fs.ErrNotExist) {\n\t\tr.fail(src, dst, err)\n\t\treturn nil\n\t}\n\n",
             "")],
    "FAIL: TestADestinationThatCannotBeInspectedIsAFailureAndNotAnAbsence"),
