@@ -394,53 +394,76 @@ func TestEveryInvocationFormIsAcceptedAndReachesItsCommand(t *testing.T) {
 	// when the program is broken in some other way, or prints its usage block
 	// under a different first word.
 	//
-	// The two enumeration forms and the two copy forms have landed and are
-	// asserted by what they DO -- that is the replacement
-	// ExpectNotImplemented's doc promises for each use "as that command's
-	// ticket lands", and it is a stronger claim than the placeholder made. The
-	// three link forms still report themselves unimplemented, from dispatch,
-	// which is the same positive assertion in the only shape available to a
-	// command whose ticket is still open.
+	// The four landed forms each carry the stdout fragment only their own
+	// command produces, which is the replacement ExpectNotImplemented's doc
+	// promises for each use "as that command's ticket lands". Exit 0 and a
+	// silent stderr is NOT that replacement: a copy form run against a world
+	// holding no file the named application owns exits 0 in silence whether it
+	// reached its own arm, the other direction's, or no arm at all. Observed,
+	// by dispatching backup to restoreDirection and watching every row here
+	// pass -- and again by answering `show` with list's output, which this
+	// case also could not see. The three link forms still report themselves
+	// unimplemented, from dispatch, which is the same positive assertion in
+	// the only shape available to a command whose ticket is still open.
 	//
-	// Each world needs a resolvable config and a storage root: appspec/02 puts
-	// the config gate before dispatch for every subcommand and appspec/01
-	// section 4 puts the environment gate there too, so without them the run
-	// dies at a gate and this case would report that the parser rejected a
-	// form it accepted perfectly. UseResolvableStorage supplies both.
+	// Hence the file each copy world is seeded with, on the side that
+	// direction reads from: a home file for backup, a Mackup-folder file for
+	// restore. Without one there is nothing to carry across and nothing to
+	// print, and the progress line naming it is what says which way the run
+	// went.
 	//
-	// The Mackup folder is created too, because backup and restore each run a
-	// FIFTH gate (appspec/01 section 4 level 2 and 3) that this case is not
-	// about: without it backup would stop to ask whether to create the folder
-	// and, with stdin at end-of-input, fail there -- reported here as a
-	// rejected invocation form, which is the misdiagnosis this comment exists
-	// to prevent.
+	// newSyncWorld supplies the rest, for the reasons its own comment gives:
+	// a resolvable config and storage root, because appspec/02 puts the config
+	// gate before dispatch for every subcommand and appspec/01 section 4 puts
+	// the environment gate there too; and the Mackup folder, because backup
+	// and restore each run a FIFTH gate (appspec/01 section 4 level 2 and 3)
+	// that this case is not about -- without it backup would stop to ask
+	// whether to create the folder and, with stdin at end-of-input, fail
+	// there, reported here as a rejected invocation form.
+	//
+	// The application is the probe rather than a shipped key for the reason
+	// probeKey exists: the file set under test is this case's own, so the
+	// progress line it asserts cannot change because the shipped catalog was
+	// re-generated. appspec/02 writes the operand as <application>, and one
+	// key satisfies that usage line as well as another.
+	const probeFile = ".probrc"
 	for _, test := range []struct {
 		args []string
-		cmd  string
-		// done marks a form whose command is implemented: it must succeed and
-		// print to stdout rather than report itself unimplemented.
-		done bool
+		// cmd is the arm the form selects. It names the command in the
+		// unimplemented diagnostic, and it chooses which side of the copy the
+		// world is seeded on -- so a row that reached the wrong arm is a row
+		// whose seeded file is on the wrong side of it.
+		cmd string
+		// want is the stdout fragment only cmd produces, and the whole of what
+		// makes a landed row able to fail. Empty marks a form whose command is
+		// not implemented yet: those report themselves from dispatch instead.
+		want string
 	}{
-		{args: []string{"list"}, cmd: "list", done: true},
-		{args: []string{"show", "vim"}, cmd: "show", done: true},
-		{args: []string{"backup"}, cmd: "backup", done: true},
-		{args: []string{"backup", "vim"}, cmd: "backup", done: true},
-		{args: []string{"restore"}, cmd: "restore", done: true},
-		{args: []string{"restore", "vim"}, cmd: "restore", done: true},
+		{args: []string{"list"}, cmd: "list", want: listHeader},
+		{args: []string{"show", probeKey}, cmd: "show", want: showNamePrefix + "Probe"},
+		{args: []string{"backup"}, cmd: "backup", want: backupVerb + " " + probeFile + " ..."},
+		{args: []string{"backup", probeKey}, cmd: "backup", want: backupVerb + " " + probeFile + " ..."},
+		{args: []string{"restore"}, cmd: "restore", want: restoreVerb + " " + probeFile + " ..."},
+		{args: []string{"restore", probeKey}, cmd: "restore", want: restoreVerb + " " + probeFile + " ..."},
 		{args: []string{"link"}, cmd: "link"},
-		{args: []string{"link", "vim"}, cmd: "link"},
+		{args: []string{"link", probeKey}, cmd: "link"},
 		{args: []string{"link", "install"}, cmd: "link install"},
-		{args: []string{"link", "install", "vim"}, cmd: "link install"},
+		{args: []string{"link", "install", probeKey}, cmd: "link install"},
 		{args: []string{"link", "uninstall"}, cmd: "link uninstall"},
-		{args: []string{"link", "uninstall", "vim"}, cmd: "link uninstall"},
+		{args: []string{"link", "uninstall", probeKey}, cmd: "link uninstall"},
 	} {
-		world := NewWorld(t)
-		world.UseMackupFolder()
-		if test.done {
-			world.Run(test.args...).ExpectExit(0).ExpectSilentStderr()
+		world := newSyncWorld(t, probeFile)
+		switch test.cmd {
+		case "backup":
+			world.WriteFile(probeFile, "from home\n", 0o644)
+		case "restore":
+			world.WriteMackup(probeFile, "from storage\n", 0o600)
+		}
+		if test.want == "" {
+			world.Run(test.args...).ExpectNotImplemented(test.cmd)
 			continue
 		}
-		world.Run(test.args...).ExpectNotImplemented(test.cmd)
+		world.Run(test.args...).ExpectExit(0).ExpectSilentStderr().ExpectStdout(test.want)
 	}
 }
 
@@ -457,15 +480,42 @@ func TestOptionsAreAcceptedOnEitherSideOfTheSubcommand(t *testing.T) {
 	// The config gate and the Mackup-folder gate are satisfied for the same
 	// reason they are in the case above: an option accepted on either side of
 	// the subcommand is only observable once the run gets far enough to reach
-	// the subcommand.
+	// the subcommand. So is the seeded home file -- an option is observable
+	// only in a run that had something to do.
+	//
+	// What each form asserts is the LONG progress line and an empty
+	// destination: --verbose chose that spelling over the short one, and
+	// --dry-run is why nothing landed under it. Exit 0 and a silent stderr
+	// asserted neither, and a parser that dropped every option appearing after
+	// the subcommand -- the exact regression this case is named for -- passed
+	// it. Observed, by writing that parser.
+	//
+	// --force and --root ride along unobserved, and this case does not pretend
+	// otherwise. Neither has an effect here to watch: appspec/01 section 3
+	// puts the replace prompt inside the mutation --dry-run declines to
+	// perform, so there is no prompt for --force to skip, and --root only
+	// waives a superuser refusal that a test process does not trigger. They
+	// are here as SPELLINGS whose position must be accepted, which the exit
+	// code still covers -- a parser that rejected one outright would fail on
+	// the usage error. The two conformance cases that watch what --force and
+	// --dry-run DO are in sync_test.go; this one is about where they may sit.
+	const probeFile = ".probrc"
 	for _, args := range [][]string{
-		{"-f", "-n", "-v", "-r", "backup", "vim"},
-		{"backup", "vim", "--force", "--dry-run", "--verbose", "--root"},
-		{"--force", "backup", "--dry-run", "vim", "-vr"},
+		{"-f", "-n", "-v", "-r", "backup", probeKey},
+		{"backup", probeKey, "--force", "--dry-run", "--verbose", "--root"},
+		{"--force", "backup", "--dry-run", probeKey, "-vr"},
 	} {
-		world := NewWorld(t)
-		world.UseMackupFolder()
-		world.Run(args...).ExpectExit(0).ExpectSilentStderr()
+		world := newSyncWorld(t, probeFile)
+		world.WriteFile(probeFile, "from home\n", 0o644)
+
+		result := world.Run(args...).ExpectExit(0).ExpectSilentStderr()
+
+		want := backupVerb + "\n  " + world.Path(probeFile) + "\n  to\n  " + world.Mackup(probeFile) + " ..."
+		if !strings.Contains(result.StdoutText(), want) {
+			t.Errorf("mackup %s stdout = %q, want the --verbose long progress form %q",
+				strings.Join(args, " "), result.Stdout, want)
+		}
+		expectAbsent(t, world.Mackup(probeFile))
 	}
 }
 

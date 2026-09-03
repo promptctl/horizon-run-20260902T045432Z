@@ -1266,6 +1266,47 @@ MUTATIONS = [
    "FAIL: TestTheIncompleteSummaryIsPrintedEvenWhenTheRunEndsAtAnUnanswerablePrompt"),
    # rig: TestTheIncompleteSummaryIsPrintedEvenWhenTheRunEndsAtAnUnanswerablePrompt
 
+ # --- appspec/02 the two argv defects the round-2 review of PR #10 found
+ #
+ # Both are what test/conformance/argv_test.go's two acceptance cases exist to
+ # catch, and until that review neither case could: they asserted exit 0 and a
+ # silent stderr over worlds holding no file the named application owns, which
+ # is what a run that dropped every option, or reached the wrong arm entirely,
+ # also produces. Seeding one file per world and asserting the line the command
+ # prints about it is the fix, and these two entries are what says so.
+
+ # The one-word defect appspec/01 section 1 is written to prevent: "any
+ # divergence between backup and restore other than {direction, user-facing
+ # wording, the one link-skip} is a defect", and the direction record exists so
+ # the divergence is ONE argument. Which makes passing the wrong one the whole
+ # bug, in one token, with no other symptom -- both arms still run, still gate,
+ # still copy, and still exit 0.
+ #
+ # `expect` is the CONFORMANCE diagnostic, for the reason the section above
+ # gives and probed the same way: `go test ./internal/...` is green under this
+ # mutation, so `make check` does not stop at the unit stage.
+ ("backup runs the restore direction", [repl(D,
+   "\t\treturn runSync(p, backupDirection)",
+   "\t\treturn runSync(p, restoreDirection)")],
+   "FAIL: TestEveryInvocationFormIsAcceptedAndReachesItsCommand"),
+   # rig: TestEveryInvocationFormIsAcceptedAndReachesItsCommand
+
+ # The regression TestOptionsAreAcceptedOnEitherSideOfTheSubcommand is NAMED
+ # for. appspec/02 requires only that options precede the subcommand; accepting
+ # them after it is this implementation's own promise, so it is exactly the
+ # half a rewrite of the scan loop would drop without any spec line objecting.
+ # The parser has no notion of "after" to break, which is why the mutation adds
+ # one: once a positional has been seen, every remaining option is skipped.
+ #
+ # Here `expect` IS a unit diagnostic -- internal/cli/parse_test.go sees this
+ # one and `make check` stops there -- and the [rig: ...] note carries the
+ # conformance half. Both observed by injection, neither predicted.
+ ("options after the subcommand are dropped", [repl(P,
+   "\t\targ := argv[i]\n\t\tswitch {",
+   "\t\targ := argv[i]\n\t\tif len(positional) > 0 && strings.HasPrefix(arg, \"-\") {\n\t\t\tcontinue\n\t\t}\n\t\tswitch {")],
+   "FAIL: TestParseOptionsBeforeAndAfterSubcommand"),
+   # rig: TestOptionsAreAcceptedOnEitherSideOfTheSubcommand
+
  # --- appspec/06 drift detection and the diff detail (macklebox-copy-sync-dpz.2)
  #
  # The other deferral, paid the same way. internal/drift and internal/plist
