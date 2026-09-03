@@ -1414,6 +1414,63 @@ func TestAFileThatCannotBeCopiedIsReportedAndTheRunCarriesOnAndExitsOne(t *testi
 	}
 }
 
+func TestADestinationThatCannotBeInspectedIsAFailureAndNotAnAbsence(t *testing.T) {
+	// appspec/06 splits on whether "a copy already exists at the destination"
+	// (step 3) or "no copy exists at the destination" (step 4). A stat of the
+	// destination that fails for a reason OTHER than its absence has answered
+	// neither question, so the procedure may not take either branch -- and the
+	// branch it fell into was step 4, the one with no comparison, no diff and
+	// no replace prompt in front of the write.
+	//
+	// The stakes are the guard, not the diagnostic. syncfs.Copy does not
+	// require an absent destination, so an uninspectable one was copied over
+	// unprompted; on a network or FUSE home an ESTALE or EIO would be enough,
+	// and appspec/06 step 3's confirmation is exactly what stands between the
+	// user and that write. That shape is not constructible in a portable case,
+	// so what is asserted here is the predicate itself, on the one stat
+	// failure a case CAN arrange: a regular file where the destination's
+	// parent directory belongs, which is ENOTDIR and not ENOENT.
+	//
+	// SILENT STDOUT is the load-bearing assertion and the whole reason this
+	// case is separate from the partial-failure one above, which arranges the
+	// same fixture and passed throughout. The old shape printed "<verb> <f>
+	// ..." -- announcing a copy for a file it had not looked at and was not
+	// going to make -- and then failed further in, reporting the mkdir that
+	// syncfs.Copy tried rather than the stat that should have stopped the run
+	// before it. Both spellings exit 1 and both name a copy failure, so the
+	// progress line is the observable that tells them apart.
+	for _, test := range []struct {
+		command string
+		summary string
+	}{
+		{"backup", backupIncomplete},
+		{"restore", restoreIncomplete},
+	} {
+		world := newSyncWorld(t, ".probdir/inner")
+		var source, destination string
+		if test.command == "backup" {
+			source = world.WriteFile(".probdir/inner", "home\n", 0o600)
+			world.WriteMackup(".probdir", "a file where the folder belongs\n", 0o600)
+			destination = world.Mackup(".probdir", "inner")
+		} else {
+			source = world.WriteMackup(".probdir/inner", "storage\n", 0o600)
+			world.WriteFile(".probdir", "a file where the folder belongs\n", 0o600)
+			destination = world.Path(".probdir", "inner")
+		}
+
+		result := world.Run(test.command, probeKey).ExpectExit(1).ExpectSilentStdout()
+
+		stderr := result.StderrText()
+		if want := copyFailurePrefix + source + " to " + destination + ": "; !strings.Contains(stderr, want) {
+			t.Errorf("%s stderr = %q, want the failure reported against the destination it could not inspect, %q",
+				test.command, result.Stderr, want)
+		}
+		if want := test.summary + "1 file(s) could not be copied:"; !strings.Contains(stderr, want) {
+			t.Errorf("%s stderr = %q, want the end-of-run summary %q", test.command, result.Stderr, want)
+		}
+	}
+}
+
 func TestTheIncompleteSummaryIsPrintedEvenWhenTheRunEndsAtAnUnanswerablePrompt(t *testing.T) {
 	// A run can both fail a copy and then die at a prompt it cannot answer, and
 	// the two contracts that cover those are separate: appspec/06 makes the

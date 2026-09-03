@@ -1,7 +1,9 @@
 package app
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -339,14 +341,39 @@ func (r *syncRun) file(relative string) error {
 		return nil
 	}
 
-	// Step 4 is taken first because it is the simpler branch: nothing at the
-	// destination means no comparison, no diff and no prompt.
-	//
 	// os.Lstat, so a symlink AT the destination counts as present and is
 	// prompted about as a "link". Following it would make restore silently
 	// overwrite whatever a home symlink pointed at, which is a file the user
 	// never named.
 	existing, err := os.Lstat(dst)
+
+	// A destination that could not be INSPECTED is neither step 3 nor step 4.
+	// Both of those ask whether a copy is there, and a stat that failed for
+	// any reason other than ENOENT did not answer -- so the procedure may not
+	// pick a branch, and least of all the unguarded one. Reading every error
+	// as "nothing is there" sends an uninspectable destination straight to
+	// syncfs.Copy, which does not require an absent destination (O_CREATE
+	// without O_EXCL, MkdirAll for a tree), past the comparison, the diff and
+	// the replace prompt that appspec/06 step 3 exists to put in front of
+	// exactly that write. On a network or FUSE home an ESTALE or EIO would be
+	// enough to overwrite a file the user was never asked about, and the run
+	// would exit 0 with no record that a guard had been skipped.
+	//
+	// appspec/06's partial-failure contract already has the shape this needs:
+	// an error line, the path recorded as data, the run carrying on, a
+	// non-zero exit and the file named in the summary. No progress line, and
+	// that is the point of putting the guard here rather than after one -- the
+	// progress line announces a copy, and this file never got as far as
+	// deciding to make one. Before the dry-run check for the same reason: a
+	// dry run that cannot see the destination cannot say what a real run would
+	// do, and "would copy" is precisely the claim it has no basis for.
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		r.fail(src, dst, err)
+		return nil
+	}
+
+	// Step 4 is taken before step 3 because it is the simpler branch: nothing
+	// at the destination means no comparison, no diff and no prompt.
 	if err != nil {
 		r.progress(relative, src, dst)
 		if r.dryRun {

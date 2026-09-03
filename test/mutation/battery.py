@@ -1307,6 +1307,29 @@ MUTATIONS = [
    "FAIL: TestParseOptionsBeforeAndAfterSubcommand"),
    # rig: TestOptionsAreAcceptedOnEitherSideOfTheSubcommand
 
+ # --- appspec/06 the guard the round-4 review of PR #10 found keyed on the
+ # wrong predicate
+ #
+ # appspec/06 splits the per-file procedure on whether a copy EXISTS at the
+ # destination. The code split on whether os.Lstat returned an error, which is
+ # not the same question: a stat that failed for any reason other than ENOENT
+ # answered neither branch, and the branch it fell into was step 4 -- no
+ # comparison, no diff, no replace prompt, straight to syncfs.Copy, which does
+ # not require an absent destination. Two repls, because dropping the guard
+ # leaves "errors" and "io/fs" unused and an entry that cannot compile reports
+ # nothing about the suite.
+ #
+ # `expect` is the CONFORMANCE diagnostic, for the reason the sync.go section
+ # above gives and probed the same way: `go test ./internal/...` is green under
+ # this mutation, so `make check` carries on to the conformance stage.
+ ("an uninspectable destination is read as an absent one", [
+   repl(SN, "\t\"errors\"\n\t\"fmt\"\n\t\"io/fs\"\n\t\"os\"\n",
+            "\t\"fmt\"\n\t\"os\"\n"),
+   repl(SN, "\tif err != nil && !errors.Is(err, fs.ErrNotExist) {\n\t\tr.fail(src, dst, err)\n\t\treturn nil\n\t}\n\n",
+            "")],
+   "FAIL: TestADestinationThatCannotBeInspectedIsAFailureAndNotAnAbsence"),
+   # rig: TestADestinationThatCannotBeInspectedIsAFailureAndNotAnAbsence
+
  # --- appspec/06 drift detection and the diff detail (macklebox-copy-sync-dpz.2)
  #
  # The other deferral, paid the same way. internal/drift and internal/plist
