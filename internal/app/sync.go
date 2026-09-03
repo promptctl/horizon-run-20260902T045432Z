@@ -290,12 +290,12 @@ func (r *syncRun) flushHeader() {
 
 // file is appspec/06 "The shared per-file procedure", step for step.
 //
-// Its four numbered steps are the four blocks below, in that order, and the
-// numbering is load-bearing: the link-skip is asked BEFORE the destination is
-// looked at, so a file that was link-installed is skipped rather than compared
-// against the very copy its home path points to -- a comparison that would
-// report identical and then, on any implementation that treated identity
-// differently, copy a file over itself.
+// Its four numbered steps are the four blocks below, and the numbering is
+// load-bearing: the link-skip is asked BEFORE the destination is looked at, so
+// a file that was link-installed is skipped rather than compared against the
+// very copy its home path points to -- a comparison that would report
+// identical and then, on any implementation that treated identity differently,
+// copy a file over itself.
 func (r *syncRun) file(relative string) error {
 	homePath := filepath.Join(r.home, relative)
 	mackupPath := filepath.Join(r.folder, relative)
