@@ -1,7 +1,9 @@
 package app
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 
 	"github.com/promptctl/macklebox/internal/fault"
@@ -60,7 +62,11 @@ const createFolderQuestion = "Mackup needs a directory to store your configurati
 // reason: narrowing a directory the program was never asked to manage is a
 // side effect on the user's storage, not a permission this program clamps.
 func ensureMackupFolder(confirm confirmer, folder string) error {
-	if isDirectory(folder) {
+	present, err := folderPresent(folder)
+	if err != nil {
+		return err
+	}
+	if present {
 		return nil
 	}
 	create, err := confirm.Ask(fmt.Sprintf(createFolderQuestion, folder))
@@ -97,7 +103,11 @@ func ensureMackupFolder(confirm confirmer, folder string) error {
 // content to restore, and a fresh empty folder would make an empty restore look
 // like a successful one.
 func requireMackupFolder(folder string) error {
-	if isDirectory(folder) {
+	present, err := folderPresent(folder)
+	if err != nil {
+		return err
+	}
+	if present {
 		return nil
 	}
 	return fault.Guardedf("Unable to find the Mackup folder: %s\n"+
@@ -105,20 +115,46 @@ func requireMackupFolder(folder string) error {
 		"client bring the folder down, before restoring or linking.", folder)
 }
 
-// isDirectory reports whether path is a directory this process can stat.
+// folderPresent reports whether the Mackup folder is a directory that is there,
+// and separates that question from the one both gates used to conflate it with:
+// whether the program could look at all.
 //
 // A directory, not merely something that exists, for the reason level 1's
 // storage-root check gives: appspec/06 puts the synced files INSIDE this path,
 // and a regular file sitting where the Mackup folder belongs cannot hold them.
 // Reporting it as present would move the failure to the first copy, where it
 // arrives as a per-file "Unable to copy" line for every file in the run rather
-// than as the one gate failure it is.
+// than as the one gate failure it is. A file there is therefore absent, and
+// that stays true.
 //
 // Stat and not Lstat: pointing the Mackup folder at another volume through a
 // symlink is an ordinary arrangement for a directory that lives in a sync
 // client's tree, and the directory it resolves to is the one the files are
 // written into.
-func isDirectory(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
+//
+// A stat that fails for any reason other than ENOENT establishes NEITHER
+// answer, and returning false for it made both gates assert something the
+// program had not found out. A storage root without its search bit is enough:
+// level 1 stats the root itself and passes, then this stat gets EACCES, and
+// restore reported "Unable to find the Mackup folder" for a folder sitting
+// right there -- with a hint sending the user to re-run backup on another
+// machine rather than at the permission. Backup, on the same input, offered to
+// CREATE the folder that already exists.
+//
+// This is a deliberate divergence from the reference, which reaches this
+// through Python's os.path.isdir and so answers false for every stat error
+// alike; appspec/07's table has a row for a MISSING folder and none for an
+// unreadable one. appspec/01 section 5 is the licence -- a reimplementation may
+// fix a defect of the reference "without changing any successful-run behavior"
+// -- and this changes none: the run exits 1 either way, and only the diagnostic
+// moves, from a claim to what actually happened.
+func folderPresent(folder string) (bool, error) {
+	info, err := os.Stat(folder)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fault.Guardedf("Unable to inspect the Mackup folder: %s", err)
+	}
+	return info.IsDir(), nil
 }

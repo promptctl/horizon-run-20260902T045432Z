@@ -272,11 +272,16 @@ func (r *syncRun) header(key string) {
 // three Says it would be three messages; written as one uncoloured string it
 // would lose the bold name appspec/07 asks for.
 //
-// Called from trace and progress and from nowhere else, which is a claim about
-// this file rather than a convention: those two are the only methods that can
-// produce an application's FIRST line. The drift header, the replace prompt and
-// fail are each reachable only after progress has run for the same file, so a
-// flush at any of them would be one that has already happened.
+// Called from trace and progress and from nowhere else: they are the only two
+// that can produce an application's first STDOUT line, which is what this
+// header groups. The drift header and the replace prompt are reachable only
+// after progress has run for the same file. fail is NOT -- the uninspectable-
+// destination guard reaches it with no progress line before it -- and is left
+// unflushed deliberately: it writes to stderr, and names both paths in full,
+// so it needs no header to say which application it belongs to. Flushing there
+// would put a header on stdout with nothing under it, which is the one thing
+// TestTheVerboseHeaderIsPrintedOnlyForAnApplicationThatPrintsSomething
+// forbids outright.
 func (r *syncRun) flushHeader() {
 	if !r.verbose || r.pendingHeader == "" {
 		return

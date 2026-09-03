@@ -53,6 +53,18 @@ const (
 	noHomeRefusal      = "Error: Mackup can't do anything without a home =("
 	missingFolderError = "Error: Unable to find the Mackup folder: "
 
+	// uninspectableFolderError has no row in that table, and the comment on
+	// folderPresent says why it exists anyway: the table distinguishes a
+	// MISSING folder and the reference cannot distinguish an unreadable one
+	// from it.
+	uninspectableFolderError = "Error: Unable to inspect the Mackup folder: "
+
+	// missingRootError and uninspectableRootError are the level-1 pair of those
+	// two, for the storage root the Mackup folder lives inside. The first IS a
+	// row of appspec/07's table; the second is not, for the same reason.
+	missingRootError       = "Error: Unable to find the storage folder: "
+	uninspectableRootError = "Error: Unable to inspect the storage folder: "
+
 	// answerHint is what appspec/07 puts after every question: "the question
 	// text followed by ` <Yes|No> `".
 	answerHint = " <Yes|No> "
@@ -1561,6 +1573,39 @@ func TestTheVerboseHeaderIsPrintedOnlyForAnApplicationThatPrintsSomething(t *tes
 			t.Errorf("--verbose backup stdout = %q, want no header immediately followed by another (%q then %q): the first heads nothing",
 				result.Stdout, line, lines[i+1])
 		}
+	}
+}
+
+func TestAnApplicationWhoseOnlyOutputIsAFailureGetsNoVerboseHeader(t *testing.T) {
+	// The corollary of the case above, and the one shape that can distinguish
+	// the two readings of what the header heads. appspec/01 section 3 lists the
+	// per-app header among the things verbose ADDS to stdout and appspec/07
+	// gives it its colours; a per-file failure line is stderr. So an
+	// application whose whole contribution is a failure has nothing on the
+	// stream the header groups, and printing one would put a header over
+	// nothing -- exactly what the case above forbids for every other
+	// application.
+	//
+	// It is reachable at all only because of the uninspectable-destination
+	// guard, which is the one path to fail with no progress line ahead of it.
+	// That makes flushHeader's "called from trace and progress and nowhere
+	// else" a claim this case can check rather than one the next reader has to
+	// take on trust -- adding the flush to fail passes every other case in this
+	// file and fails this one.
+	//
+	// Nothing is lost by withholding it. appspec/06's failure line names src
+	// and dst in FULL, so it already says which application it came from; the
+	// progress line it would otherwise have followed names the file relative to
+	// home, which is why that line is the one that needs a header.
+	world := newSyncWorld(t, ".probdir/inner")
+	world.WriteFile(".probdir/inner", "home\n", 0o600)
+	world.WriteMackup(".probdir", "a file where the folder belongs\n", 0o600)
+
+	result := world.Run("--verbose", "backup", probeKey).ExpectExit(1).ExpectSilentStdout()
+
+	if !strings.Contains(result.StderrText(), copyFailurePrefix) {
+		t.Errorf("--verbose backup stderr = %q, want the per-file failure line: without it this case is asserting silence about a run that did nothing",
+			result.Stderr)
 	}
 }
 

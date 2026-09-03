@@ -52,7 +52,7 @@ FILES = ["test/conformance/harness_test.go", "test/conformance/argv_test.go",
          "internal/appdb/appdb.go", "internal/ini/ini.go",
          "internal/homepath/homepath.go",
          "internal/app/enumerate.go", "internal/app/stages.go",
-         "internal/app/sync.go",
+         "internal/app/sync.go", "internal/app/folder.go",
          # The catalog is DATA, and these two are the first non-.go entries in
          # this list. A mutation to a definition file is only worth writing now
          # that `list` and `show` print what it holds -- see the appspec/05
@@ -114,6 +114,7 @@ HP = "internal/homepath/homepath.go"
 EN = "internal/app/enumerate.go"
 SG = "internal/app/stages.go"
 SN = "internal/app/sync.go"
+FD = "internal/app/folder.go"
 CT = "internal/catalog/catalog.go"
 MK = "internal/catalog/applications/mackup.cfg"
 SY = "internal/syncfs/syncfs.go"
@@ -983,8 +984,19 @@ MUTATIONS = [
  # reaches for when the gate looks like it is re-checking a path the config
  # already resolved -- it is not; nothing before it looks at the filesystem at
  # all, which is precisely what clause 2 arranges.
- ("the storage-root existence check is deleted", [repl(SG,
-   '\tif info, err := os.Stat(root); err != nil || !info.IsDir() {\n'
+ #
+ # Three repls since the round-5 review split the check in two: the stat, both
+ # arms, and the two imports the inspect arm is the only user of. Deleting only
+ # the arms would leave `info` and `err` declared and unused, which is a
+ # DOES-NOT-COMPILE rather than a program that answers wrongly.
+ ("the storage-root existence check is deleted", [
+   repl(SG, '\t"errors"\n\t"io/fs"\n\t"os"\n', '\t"os"\n'),
+   repl(SG, '\tinfo, err := os.Stat(root)\n', ''),
+   repl(SG,
+   '\tif err != nil && !errors.Is(err, fs.ErrNotExist) {\n'
+   '\t\treturn fault.Guardedf("Unable to inspect the storage folder: %s", err)\n'
+   '\t}\n'
+   '\tif err != nil || !info.IsDir() {\n'
    '\t\treturn fault.Guardedf("Unable to find the storage folder: %s", root)\n'
    '\t}\n'
    '\treturn nil',
@@ -1329,6 +1341,57 @@ MUTATIONS = [
             "")],
    "FAIL: TestADestinationThatCannotBeInspectedIsAFailureAndNotAnAbsence"),
    # rig: TestADestinationThatCannotBeInspectedIsAFailureAndNotAnAbsence
+
+ # --- appspec/01 section 4 and appspec/07: what the round-5 review found the
+ # round-4 fix had moved
+ #
+ # Fixing the per-file guard made fail reachable with no progress line ahead of
+ # it, and that in turn made the SAME conflation one file over worth naming: a
+ # stat error is not an answer, wherever it is asked.
+
+ # The other half of what the header means. Flushing from fail looks like the
+ # obvious repair for "an application that failed got no header" and is the
+ # wrong one: the header is a STDOUT grouping and the failure line is stderr,
+ # so it prints a header with nothing under it -- which every OTHER application
+ # in TestTheVerboseHeaderIsPrintedOnlyForAnApplicationThatPrintsSomething is
+ # already forbidden from doing. Only the verbose case can see this; the
+ # round-4 case runs unscoped-quiet and flushHeader returns early without
+ # --verbose, which is why the two are separate cases.
+ ("fail flushes the pending verbose header", [repl(SN,
+   "func (r *syncRun) fail(src, dst string, err error) {\n",
+   "func (r *syncRun) fail(src, dst string, err error) {\n\tr.flushHeader()\n")],
+   "FAIL: TestAnApplicationWhoseOnlyOutputIsAFailureGetsNoVerboseHeader"),
+   # rig: TestAnApplicationWhoseOnlyOutputIsAFailureGetsNoVerboseHeader
+
+ # The folder gate before the round-5 review: os.path.isdir's answer, which is
+ # what the reference gives and what appspec/07's table has no row for. Restore
+ # reported a folder it could not stat as missing, hint and all; backup offered
+ # to create one that was already there. Two repls for the reason the entry
+ # above it has them -- the guard's removal leaves "errors" and "io/fs" unused.
+ #
+ # `expect` is the CONFORMANCE diagnostic, probed like the others: no unit
+ # package sees this, so `make check` reaches the conformance stage. The case is
+ # behind `conformance && unix` and skips as the superuser, so a battery run as
+ # root would report this NOT KILLED -- correctly, since the fixture denies
+ # nothing then.
+ ("the folder gate reads every stat error as absence", [
+   repl(FD, "\t\"errors\"\n\t\"fmt\"\n\t\"io/fs\"\n\t\"os\"\n",
+            "\t\"fmt\"\n\t\"os\"\n"),
+   repl(FD, "\tinfo, err := os.Stat(folder)\n\tif err != nil {\n\t\tif errors.Is(err, fs.ErrNotExist) {\n\t\t\treturn false, nil\n\t\t}\n\t\treturn false, fault.Guardedf(\"Unable to inspect the Mackup folder: %s\", err)\n\t}\n\treturn info.IsDir(), nil",
+            "\tinfo, err := os.Stat(folder)\n\treturn err == nil && info.IsDir(), nil")],
+   "FAIL: TestAMackupFolderThatCannotBeInspectedIsNotReportedAsMissing"),
+   # rig: TestAMackupFolderThatCannotBeInspectedIsNotReportedAsMissing
+
+ # Level 1 of the same lattice, which the round-5 review did not name and which
+ # was found by asking the finding's question of the other two gates. Same
+ # conflation, same one-line shape, and it had the same consequence: a storage
+ # root inside an unsearchable directory was reported as one that is not there.
+ ("the storage-root gate reads every stat error as absence", [
+   repl(SG, "\t\"errors\"\n\t\"io/fs\"\n\t\"os\"\n", "\t\"os\"\n"),
+   repl(SG, "\tif err != nil && !errors.Is(err, fs.ErrNotExist) {\n\t\treturn fault.Guardedf(\"Unable to inspect the storage folder: %s\", err)\n\t}\n",
+            "")],
+   "FAIL: TestAStorageRootThatCannotBeInspectedIsNotReportedAsMissing"),
+   # rig: TestAStorageRootThatCannotBeInspectedIsNotReportedAsMissing
 
  # --- appspec/06 drift detection and the diff detail (macklebox-copy-sync-dpz.2)
  #
