@@ -28,6 +28,7 @@
 package conformance
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -93,6 +94,21 @@ func newSyncWorld(t *testing.T, files ...string) *syncWorld {
 	folder := world.UseMackupFolder()
 	world.WriteFile(".mackup/"+probeKey+".cfg", probeDefinition(files...), 0o600)
 	return &syncWorld{World: world, folder: folder}
+}
+
+// newGateWorld is the world for the cases about the Mackup-folder gate itself:
+// resolvable storage and a probe definition, but NO Mackup folder, so the fifth
+// gate of appspec/01 section 4 is the thing under test rather than the thing in
+// the way. It returns the world and the folder path the gate will decide about.
+//
+// The mirror image of newSyncWorld, which creates the folder for the same
+// reason this one does not.
+func newGateWorld(t *testing.T, files ...string) (*World, string) {
+	t.Helper()
+	world := NewWorld(t)
+	root := world.UseResolvableStorage()
+	world.WriteFile(".mackup/"+probeKey+".cfg", probeDefinition(files...), 0o600)
+	return world, filepath.Join(root, "Mackup")
 }
 
 // probeDefinition is a definition file naming the given home-relative paths.
@@ -498,7 +514,7 @@ func TestTheLinkSkipHoldsWhenTheStorageRootIsReachedThroughASymlink(t *testing.T
 	world := NewWorld(t)
 	// The config names `storage`, and `storage` is a link to the directory
 	// that really holds the Mackup folder.
-	world.WriteFile(".mackup.cfg", "[storage]\nengine = file_system\npath = storage\n", 0o600)
+	world.WriteFile(".mackup.cfg", storageSection, 0o600)
 	real := world.Path("volume")
 	if err := os.MkdirAll(filepath.Join(real, "Mackup"), 0o700); err != nil {
 		t.Fatalf("creating the real storage tree: %v", err)
@@ -782,4 +798,686 @@ func TestASymlinkAtTheDestinationGetsThePlainPromptWithNoDiff(t *testing.T) {
 	if strings.Contains(stdout, "differs between") {
 		t.Errorf("backup stdout = %q, want the plain prompt with no drift header: a symlink pair has no detail", result.Stdout)
 	}
+}
+
+// -- Step 3: the property-list arm ------------------------------------------
+
+// The two XML spellings of one property list. They differ in byte length, in
+// key order and in whitespace, and mean exactly the same thing -- which is the
+// whole point: appspec/06 puts the plist comparison AHEAD of the text
+// comparison, so these two files are identical and a program that compared
+// them as text would say they differ.
+const (
+	plistOneWayRound = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>alpha</key>
+	<string>one</string>
+	<key>beta</key>
+	<string>two</string>
+</dict>
+</plist>
+`
+	plistTheOtherWayRound = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>beta</key>
+  <string>two</string>
+  <key>alpha</key>
+  <string>one</string>
+</dict>
+</plist>
+`
+)
+
+func TestTwoSpellingsOfOnePropertyListAreComparedByContentNotBytes(t *testing.T) {
+	// appspec/06 "Drift detection", the first arm of the two-regular-files
+	// case: "if both parse as property-list (plist) files: compared by parsed
+	// content". A property-list dictionary is unordered, so two files writing
+	// the same settings in different key order are the SAME settings, and the
+	// idempotency promise of appspec/00 depends on the program saying so --
+	// every plist macOS rewrites comes back with its keys in some other order,
+	// and a backup that prompted about every one of them each run would be
+	// unusable on the platform this program is for.
+	//
+	// Run with stdin at end-of-input, so "identical" is checkable rather than
+	// asserted: a program that reported these two as differing would reach a
+	// prompt with no answer available and exit non-zero.
+	world := newSyncWorld(t, ".probplist")
+	world.WriteFile(".probplist", plistOneWayRound, 0o600)
+	world.WriteMackup(".probplist", plistTheOtherWayRound, 0o600)
+
+	before := world.Snapshot()
+	result := world.Run("backup", probeKey).ExpectExit(0).ExpectSilentStderr()
+	if result.StdoutText() != "" {
+		t.Errorf("backup printed %q, want nothing: two spellings of one property list are identical", result.Stdout)
+	}
+	world.ExpectUnchanged(before)
+}
+
+func TestAPropertyListDiffShowsTheStructureAndNotTheMarkup(t *testing.T) {
+	// The other half of the same arm: when two property lists do differ, the
+	// diff is "a unified diff of their pretty-printed structures" -- not of
+	// the files. A diff of the markup would report the XML header, the
+	// DOCTYPE and every reordered <key> as changes, which tells the user
+	// nothing about the setting that actually moved; and it would be a diff
+	// no binary-spelled plist could ever be given at all.
+	world := newSyncWorld(t, ".probplist")
+	world.WriteFile(".probplist", plistOneWayRound, 0o600)
+	world.WriteMackup(".probplist", strings.Replace(plistTheOtherWayRound,
+		"<string>one</string>", "<string>changed</string>", 1), 0o600)
+
+	result := world.RunWithInput("no\n", "backup", probeKey).ExpectExit(0)
+
+	stdout := result.StdoutText()
+	// The rendered structure, which internal/plist writes as one line per
+	// value with the dictionary keys quoted and sorted.
+	for _, want := range []string{`+  "alpha": "one"`, `-  "alpha": "changed"`} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("backup stdout = %q, want the diff line %q from the rendered structure", result.Stdout, want)
+		}
+	}
+	// The diff is source-to-destination and the destination is what changes,
+	// so the settings that agree do not appear as changes at all.
+	if strings.Contains(stdout, `-  "beta"`) || strings.Contains(stdout, `+  "beta"`) {
+		t.Errorf("backup stdout = %q, want the unchanged key out of the diff: the key order is not a difference", result.Stdout)
+	}
+	for _, markup := range []string{"<string>", "<key>", "DOCTYPE"} {
+		if strings.Contains(stdout, markup) {
+			t.Errorf("backup stdout = %q, want no %s: the diff is over the parsed structure, not the file", result.Stdout, markup)
+		}
+	}
+}
+
+// -- Step 3: the replace prompt ----------------------------------------------
+
+// replaceQuestion is the invariant half of appspec/07's two replace prompts --
+// everything after the type, the destination and the location noun, which the
+// direction record supplies.
+const replaceQuestion = " already exists in %s. Are you sure that you want to replace it?"
+
+func TestTheReplacePromptNamesTheTypeTheDestinationAndItsLocation(t *testing.T) {
+	// appspec/07's two rows, which appspec/06 derives from one prompt and two
+	// columns of the direction record: "A <file|folder|link> named <dst>
+	// already exists in <destination-location noun>. Are you sure that you
+	// want to replace it?", with backup appending "(use --force to skip this
+	// prompt)" and restore not.
+	//
+	// The <type> describes the EXISTING path -- the thing about to be
+	// destroyed -- which is why the link row exists and why it is asserted
+	// against a destination symlink whose target is an ordinary file: a
+	// program reporting what the link points at would say "file" and tell the
+	// user the wrong thing about what they are agreeing to lose.
+	for _, test := range []struct {
+		what     string
+		command  string
+		build    func(w *syncWorld) string
+		typeNoun string
+		location string
+		hint     string
+	}{
+		{
+			what:    "backup over a file in storage",
+			command: "backup",
+			build: func(w *syncWorld) string {
+				w.WriteFile(".probrc", "home\n", 0o600)
+				return w.WriteMackup(".probrc", "storage\n", 0o600)
+			},
+			typeNoun: "file",
+			location: "the Mackup folder",
+			hint:     " " + forceHint,
+		},
+		{
+			what:    "restore over a file in home",
+			command: "restore",
+			build: func(w *syncWorld) string {
+				w.WriteMackup(".probrc", "storage\n", 0o600)
+				return w.WriteFile(".probrc", "home\n", 0o600)
+			},
+			typeNoun: "file",
+			location: "your home folder",
+			hint:     "",
+		},
+		{
+			what:    "backup over a directory in storage",
+			command: "backup",
+			build: func(w *syncWorld) string {
+				w.WriteFile(".probrc", "home\n", 0o600)
+				w.WriteMackup(".probrc/inside", "storage\n", 0o600)
+				return w.Mackup(".probrc")
+			},
+			typeNoun: "folder",
+			location: "the Mackup folder",
+			hint:     " " + forceHint,
+		},
+		{
+			what:    "backup over a symlink in storage",
+			command: "backup",
+			build: func(w *syncWorld) string {
+				w.WriteFile(".probrc", "home\n", 0o600)
+				w.WriteFile("elsewhere", "somewhere else\n", 0o600)
+				symlink(t, w.Path("elsewhere"), w.Mackup(".probrc"))
+				return w.Mackup(".probrc")
+			},
+			typeNoun: "link",
+			location: "the Mackup folder",
+			hint:     " " + forceHint,
+		},
+	} {
+		world := newSyncWorld(t, ".probrc")
+		destination := test.build(world)
+
+		result := world.RunWithInput("no\n", test.command, probeKey).ExpectExit(0).ExpectSilentStderr()
+
+		want := "A " + test.typeNoun + " named " + destination +
+			fmt.Sprintf(replaceQuestion, test.location) + test.hint + answerHint
+		if !strings.Contains(result.Stdout, want) {
+			t.Errorf("%s: %s stdout = %q, want the prompt %q", test.what, test.command, result.Stdout, want)
+		}
+	}
+}
+
+func TestOnlyBackupsPromptMentionsTheForceFlag(t *testing.T) {
+	// The "mentions --force?" column of appspec/06's direction table, asserted
+	// as an absence as well as a presence. A prompt is where a user learns
+	// what they can do instead of answering, so a hint on the wrong command is
+	// a hint about a flag whose effect there is the one they were not offered.
+	//
+	// The two runs are the same fixture in opposite directions, which is what
+	// makes this a claim about the direction record rather than about two
+	// separately worded prompts.
+	for _, test := range []struct {
+		command string
+		mention bool
+	}{
+		{"backup", true},
+		{"restore", false},
+	} {
+		world := newSyncWorld(t, ".probrc")
+		world.WriteFile(".probrc", "home\n", 0o600)
+		world.WriteMackup(".probrc", "storage\n", 0o600)
+
+		result := world.RunWithInput("no\n", test.command, probeKey).ExpectExit(0)
+		if mentions := strings.Contains(result.StdoutText(), forceHint); mentions != test.mention {
+			t.Errorf("%s stdout = %q, mentions the --force hint = %v, want %v",
+				test.command, result.Stdout, mentions, test.mention)
+		}
+	}
+}
+
+func TestDecliningTheReplacePromptLeavesTheDestinationAloneAndTheRunCarriesOn(t *testing.T) {
+	// appspec/06 step 3, on a no: "skip this file". Two claims, and the second
+	// is the one a case asserting only the first would miss -- appspec/06's
+	// summary calls a declined prompt one of the states re-running converges
+	// from, so it cannot end the run, and appspec/00 promise 9 reserves the
+	// non-zero exit for a run that could not do what it was asked.
+	world := newSyncWorld(t, ".a-probrc", ".b-probrc")
+	world.WriteFile(".a-probrc", "home a\n", 0o600)
+	world.WriteMackup(".a-probrc", "storage a\n", 0o600)
+	world.WriteFile(".b-probrc", "home b\n", 0o600)
+
+	world.RunWithInput("no\n", "backup", probeKey).ExpectExit(0).ExpectSilentStderr()
+
+	expectContent(t, world.Mackup(".a-probrc"), "storage a\n")
+	expectContent(t, world.Path(".a-probrc"), "home a\n")
+	// The next file in sorted order was still processed.
+	expectContent(t, world.Mackup(".b-probrc"), "home b\n")
+}
+
+func TestAnUnrecognizedAnswerReAsksTheSameQuestion(t *testing.T) {
+	// appspec/07: "any other input re-asks the same question (the loop repeats
+	// until a recognized answer is given)". The blank line is deliberately in
+	// the input: an empty answer is "any other input", not a default, so a
+	// stray return cannot delete a file.
+	//
+	// The SAME question -- so the count is of the prompt, and the drift header
+	// and diff above it are printed once, before the loop. A program that
+	// re-printed the diff on every re-ask would produce three copies of it and
+	// fail the second assertion.
+	world := newSyncWorld(t, ".probrc")
+	world.WriteFile(".probrc", "home\n", 0o600)
+	world.WriteMackup(".probrc", "storage\n", 0o600)
+
+	result := world.RunWithInput("maybe\n\nyes\n", "backup", probeKey).ExpectExit(0).ExpectSilentStderr()
+
+	stdout := result.StdoutText()
+	if got := strings.Count(stdout, "Are you sure that you want to replace it?"); got != 3 {
+		t.Errorf("backup asked the question %d times for input \"maybe\", \"\", \"yes\", want 3\nstdout: %q", got, result.Stdout)
+	}
+	if got := strings.Count(stdout, "differs between"); got != 1 {
+		t.Errorf("backup printed the drift header %d times, want 1: a re-ask repeats the question, not the diff\nstdout: %q", got, result.Stdout)
+	}
+	// The third answer was taken, so the replace happened.
+	expectContent(t, world.Mackup(".probrc"), "home\n")
+}
+
+func TestTheForceFlagsPreAnswerEveryPromptAndShowNone(t *testing.T) {
+	// appspec/07: "--force / -f pre-answers every prompt with yes: no prompt
+	// is shown, the guarded action proceeds"; "--force-no pre-answers every
+	// prompt with no: no prompt is shown, the guarded action is skipped".
+	//
+	// Both runs have stdin at end-of-input, which is what makes "no prompt is
+	// shown" structural rather than cosmetic: a program that printed the
+	// question and then answered it itself would still pass a text assertion,
+	// but one that actually READ stdin would fail here with the non-zero exit
+	// appspec/07 gives end-of-input at a prompt. That property is the whole
+	// reason --force is scriptable.
+	for _, test := range []struct {
+		flag string
+		want string
+	}{
+		{"--force", "home\n"},
+		{"--force-no", "storage\n"},
+	} {
+		world := newSyncWorld(t, ".probrc")
+		world.WriteFile(".probrc", "home\n", 0o600)
+		world.WriteMackup(".probrc", "storage\n", 0o600)
+
+		result := world.Run(test.flag, "backup", probeKey).ExpectExit(0).ExpectSilentStderr()
+
+		if strings.Contains(result.StdoutText(), answerHint) {
+			t.Errorf("%s backup stdout = %q, want no prompt at all", test.flag, result.Stdout)
+		}
+		expectContent(t, world.Mackup(".probrc"), test.want)
+	}
+}
+
+func TestEndOfInputAtAPromptEndsTheRunUnguarded(t *testing.T) {
+	// appspec/07: "if a prompt is reached with no force flag and stdin reaches
+	// end-of-input ... the program cannot obtain a valid answer and terminates
+	// with a nonzero exit (an unhandled end-of-input condition -- the
+	// unguarded regime)". Not an implicit no: a program answering for a user
+	// who is not there is the same defect either way round, and the regime is
+	// what says so -- appspec/07 gives guarded failures the "Error: " shape
+	// and leaves the unguarded ones as the diagnostics of a run that fell
+	// over.
+	world := newSyncWorld(t, ".probrc")
+	world.WriteFile(".probrc", "home\n", 0o600)
+	world.WriteMackup(".probrc", "storage\n", 0o600)
+
+	before := world.Snapshot()
+	result := world.Run("backup", probeKey).ExpectFailureExit()
+
+	if strings.HasPrefix(result.StderrText(), "Error: ") || !strings.Contains(result.StderrText(), "mackup: ") {
+		t.Errorf("backup stderr = %q, want the unguarded shape appspec/07 gives an unanswerable prompt, not a guarded \"Error: \" line", result.Stderr)
+	}
+	// Nothing was replaced: the prompt guards the mutation, so a run that
+	// could not obtain an answer has not performed it.
+	world.ExpectUnchanged(before)
+}
+
+// -- Dry run: appspec/01 section 3, one rule and its one exception -----------
+
+func TestDryRunPrintsTheProgressLineAndMutatesNothingOnEitherPath(t *testing.T) {
+	// appspec/01 section 3: dry-run "prints the progress line it would emit
+	// for each acted-on file, then performs no copy, move, delete, or symlink
+	// of any config file".
+	//
+	// Both of appspec/06's paths in one run, because they are different code:
+	// a destination that does not exist (step 4, copy directly) and one that
+	// exists and differs (step 3, compare then prompt). The second is the one
+	// worth the fixture -- the prompt lives INSIDE the mutation it guards, so
+	// a dry run must not ask either. Stdin is at end-of-input, so a program
+	// that asked would fail here rather than being quietly answered.
+	for _, test := range []struct {
+		command string
+		verb    string
+		acted   string
+		skipped string
+	}{
+		{"backup", backupVerb, ".fresh-home", ".fresh-storage"},
+		{"restore", restoreVerb, ".fresh-storage", ".fresh-home"},
+	} {
+		world := newSyncWorld(t, ".conflict", ".fresh-home", ".fresh-storage")
+		world.WriteFile(".conflict", "home side\n", 0o600)
+		world.WriteMackup(".conflict", "storage side\n", 0o600)
+		world.WriteFile(".fresh-home", "only in home\n", 0o600)
+		world.WriteMackup(".fresh-storage", "only in storage\n", 0o600)
+
+		before := world.Snapshot()
+		result := world.Run("--dry-run", test.command, probeKey).ExpectExit(0).ExpectSilentStderr()
+
+		stdout := result.StdoutText()
+		for _, relative := range []string{".conflict", test.acted} {
+			if want := test.verb + " " + relative + " ..."; !strings.Contains(stdout, want) {
+				t.Errorf("%s --dry-run stdout = %q, want the progress line %q", test.command, result.Stdout, want)
+			}
+		}
+		if strings.Contains(stdout, test.skipped) {
+			t.Errorf("%s --dry-run stdout = %q, want no progress line for %s, whose source is not there",
+				test.command, result.Stdout, test.skipped)
+		}
+		// The prompt and the diff above it are both inside "if not dry-run".
+		for _, forbidden := range []string{answerHint, "differs between"} {
+			if strings.Contains(stdout, forbidden) {
+				t.Errorf("%s --dry-run stdout = %q, want no %q: dry-run stops at the progress line",
+					test.command, result.Stdout, forbidden)
+			}
+		}
+		world.ExpectUnchanged(before)
+	}
+}
+
+func TestDryRunStillRunsTheFolderCreationGate(t *testing.T) {
+	// The one exception appspec/01 section 3 carves out, in its own words:
+	// "dry-run does not suppress the startup 'create the storage sub-folder'
+	// decision for backup / link install -- that gate runs before the per-file
+	// loop and, under a force flag, will still create the folder; absent a
+	// force flag under dry-run it will still prompt."
+	//
+	// Both halves, because the rule is stated as a pair and a program keeping
+	// only one of them is wrong in a way the other half cannot see. What the
+	// exception does NOT extend to is the per-file loop, which is the second
+	// assertion in the first half: the folder appears, and nothing lands in
+	// it.
+	forced, folder := newGateWorld(t, ".probrc")
+	forced.WriteFile(".probrc", "home\n", 0o600)
+
+	forced.Run("--dry-run", "--force", "backup", probeKey).ExpectExit(0).ExpectSilentStderr()
+
+	if info, err := os.Stat(folder); err != nil || !info.IsDir() {
+		t.Errorf("--dry-run --force backup left no Mackup folder at %s (%v): the environment gate is not a per-file mutation and runs regardless", folder, err)
+	}
+	expectAbsent(t, filepath.Join(folder, ".probrc"))
+
+	asked, folder := newGateWorld(t, ".probrc")
+	asked.WriteFile(".probrc", "home\n", 0o600)
+
+	result := asked.RunWithInput("no\n", "--dry-run", "backup", probeKey).ExpectFailureExit()
+
+	if !strings.Contains(result.StdoutText(), createFolderFirstLine) {
+		t.Errorf("--dry-run backup stdout = %q, want the folder-creation prompt: dry-run does not suppress it", result.Stdout)
+	}
+	result.ExpectStderrLine(noHomeRefusal)
+	expectAbsent(t, folder)
+}
+
+// -- The Mackup-folder gate: appspec/01 section 4 levels 2 and 3 -------------
+
+func TestTheBackupGateCreatesTheMackupFolderOnYes(t *testing.T) {
+	// Level 2, the ensure gate: "if absent, prompt 'Mackup needs a directory
+	// to store your configuration files / Do you want to create it now?
+	// <path>'; on yes, create it (recursively)".
+	//
+	// The path is part of the question. A prompt asking whether to create a
+	// directory without saying which one is a prompt about the program's
+	// configuration -- exactly the thing a user answering it is trying to
+	// check.
+	world, folder := newGateWorld(t, ".probrc")
+	world.WriteFile(".probrc", "home\n", 0o600)
+
+	result := world.RunWithInput("yes\n", "backup", probeKey).ExpectExit(0).ExpectSilentStderr()
+
+	stdout := result.StdoutText()
+	if !strings.Contains(stdout, createFolderFirstLine) {
+		t.Fatalf("backup stdout = %q, want the first line of the folder prompt", result.Stdout)
+	}
+	if want := createFolderSecondLine + " " + folder + answerHint; !strings.Contains(stdout, want) {
+		t.Errorf("backup stdout = %q, want the second line of the folder prompt to name the path: %q", result.Stdout, want)
+	}
+	// Created, and then used: the run carried on into the per-file loop
+	// rather than stopping at the gate it had just satisfied.
+	expectContent(t, filepath.Join(folder, ".probrc"), "home\n")
+}
+
+func TestDecliningTheFolderPromptIsTheNoHomeRefusal(t *testing.T) {
+	// The other arm of level 2: "on no, fatal error 'Mackup can't do anything
+	// without a home' and exit 1". appspec/07's error table gives the line
+	// verbatim, including the =( at the end of it, and guarded means the
+	// program says that and stops rather than falling over.
+	//
+	// Nothing is created and nothing is copied, which is the substance of the
+	// refusal: a program that created the folder anyway and then declined to
+	// use it would leave the user's storage changed by an answer that said no.
+	world, folder := newGateWorld(t, ".probrc")
+	world.WriteFile(".probrc", "home\n", 0o600)
+
+	before := world.Snapshot()
+	world.RunWithInput("no\n", "backup", probeKey).ExpectFailureExit().ExpectStderrLine(noHomeRefusal)
+
+	expectAbsent(t, folder)
+	world.ExpectUnchanged(before)
+}
+
+func TestRestoreRequiresTheMackupFolderAndCreatesNothing(t *testing.T) {
+	// Level 3, the require gate: restore, link and link uninstall "require the
+	// Mackup folder to already exist -- if absent, fatal error naming the
+	// missing Mackup folder (with a hint to back up or sync first) and exit
+	// 1".
+	//
+	// Creates nothing is the whole difference between the two levels, and it
+	// is a contract rather than an omission: a fresh empty folder would make
+	// an empty restore look like a successful one. Stdin is at end-of-input,
+	// so a program that prompted here -- running level 2's gate for level 3's
+	// command -- would fail for that reason too.
+	world, folder := newGateWorld(t, ".probrc")
+
+	before := world.Snapshot()
+	result := world.Run("restore", probeKey).ExpectFailureExit().ExpectSilentStdout()
+
+	result.ExpectStderr(missingFolderError + folder)
+	expectAbsent(t, folder)
+	world.ExpectUnchanged(before)
+}
+
+func TestAnUnknownApplicationIsRefusedBeforeAnyFolderIsCreatedOrPromptShown(t *testing.T) {
+	// appspec/06 "Environment gate per command": "when an <application> is
+	// named, its validity is checked BEFORE this gate, so an unknown app name
+	// fails with 'Unsupported application: <name>' (exit 1) before any folder
+	// is created or prompt shown."
+	//
+	// The world is one where the gate WOULD act: the Mackup folder is absent,
+	// so a program that gated first would print the creation prompt and, with
+	// stdin at end-of-input, fall over unguarded -- and a program that gated
+	// first under --force would create a folder for a run that was never going
+	// to do anything. The absent folder and the silent stdout are what pin the
+	// order; the token alone would pass on either.
+	world, folder := newGateWorld(t)
+
+	before := world.Snapshot()
+	world.Run("backup", "frobnicate").ExpectExit(1).
+		ExpectStderrLine("Unsupported application: frobnicate").
+		ExpectSilentStdout()
+
+	expectAbsent(t, folder)
+	world.ExpectUnchanged(before)
+}
+
+// -- Scope: appspec/01 section 3 and appspec/03's combined precedence --------
+
+// storageSection is the [storage] section the harness's resolvable-storage
+// world writes, spelled here so a case can rewrite the config with its own
+// application lists without losing the engine that makes the world resolvable.
+const storageSection = "[storage]\nengine = file_system\npath = storage\n"
+
+func TestANamedApplicationOverridesBothConfiguredLists(t *testing.T) {
+	// appspec/01 section 3: "a named app replaces the configured scope with
+	// exactly that key and overrides both the allow and ignore lists (an
+	// ignored app is still acted on when named)". This ticket's done-claim
+	// puts it as "'backup vim' acts on vim while vim sits in
+	// applications_to_ignore".
+	//
+	// The probe is kept out by BOTH lists at once -- absent from a non-empty
+	// allowlist and present in the denylist -- so the single assertion below
+	// fails on a program that honours either of them. A program that filtered
+	// through the configured scope and then added the named key back would
+	// pass this and fail nothing else, which is why scope.go does not filter
+	// at all in this branch.
+	world := newSyncWorld(t, ".probrc")
+	world.WriteFile(".mackup.cfg", storageSection+
+		"[applications_to_sync]\nsomething-else\n"+
+		"[applications_to_ignore]\n"+probeKey+"\n", 0o600)
+	world.WriteFile(".probrc", "home\n", 0o600)
+
+	world.Run("backup", probeKey).ExpectExit(0).ExpectSilentStderr()
+
+	expectContent(t, world.Mackup(".probrc"), "home\n")
+}
+
+func TestTheDenylistWinsOverTheAllowlist(t *testing.T) {
+	// appspec/03's combined precedence, which is the rule a reimplementation
+	// is most likely to get backwards: "start with the allowlist if
+	// [applications_to_sync] is present and non-empty ... remove every key in
+	// [applications_to_ignore]". So an application in BOTH lists is ignored,
+	// and the denylist is not a filter over the catalog but the last word.
+	//
+	// Three applications and three answers, because the two rules are only
+	// separable together: `kept` is allowlisted and stays, `both` is in both
+	// lists and goes, and `neither` is in no list and is out because a
+	// non-empty allowlist is where the set STARTS. A program in which the
+	// allowlist won would back up `both`; one that ignored the allowlist
+	// entirely would back up `neither`.
+	world := NewWorld(t)
+	folder := world.UseMackupFolder()
+	world.WriteFile(".mackup.cfg", storageSection+
+		"[applications_to_sync]\nkept\nboth\n"+
+		"[applications_to_ignore]\nboth\n", 0o600)
+	for _, key := range []string{"kept", "both", "neither"} {
+		world.WriteFile(".mackup/"+key+".cfg", probeDefinition("."+key+"-rc"), 0o600)
+		world.WriteFile("."+key+"-rc", key+"\n", 0o600)
+	}
+
+	world.Run("backup").ExpectExit(0).ExpectSilentStderr()
+
+	expectContent(t, filepath.Join(folder, ".kept-rc"), "kept\n")
+	expectAbsent(t, filepath.Join(folder, ".both-rc"))
+	expectAbsent(t, filepath.Join(folder, ".neither-rc"))
+}
+
+// -- The partial-failure contract: appspec/06 and appspec/01 section 5 -------
+
+func TestAFileThatCannotBeCopiedIsReportedAndTheRunCarriesOnAndExitsOne(t *testing.T) {
+	// appspec/06 "Partial-failure contract": a per-file copy failure "is not
+	// fatal to the run: the program writes an error line to stderr ('Error:
+	// Unable to copy <src> to <dst>: <reason>'), records the failed path as
+	// data, and continues with the remaining files and applications", and at
+	// the end writes "<Backup|Restore> incomplete: <N> file(s) could not be
+	// copied:" followed by one indented line per failed path, and exits 1.
+	//
+	// Both directions, because the summary noun is a column of the direction
+	// record. The failure is arranged by putting a REGULAR FILE where the
+	// destination's parent directory belongs, which is portable and needs no
+	// permission games: creating the parent fails, so the copy fails, and the
+	// program is asked the question the contract is about -- does one bad file
+	// end the run? The file after it in sorted order is the answer.
+	for _, test := range []struct {
+		command string
+		summary string
+	}{
+		{"backup", backupIncomplete},
+		{"restore", restoreIncomplete},
+	} {
+		world := newSyncWorld(t, ".probdir/inner", ".zprobrc")
+		var source, destination string
+		if test.command == "backup" {
+			source = world.WriteFile(".probdir/inner", "home\n", 0o600)
+			world.WriteFile(".zprobrc", "carried on\n", 0o600)
+			world.WriteMackup(".probdir", "a file where the folder belongs\n", 0o600)
+			destination = world.Mackup(".probdir", "inner")
+		} else {
+			source = world.WriteMackup(".probdir/inner", "storage\n", 0o600)
+			world.WriteMackup(".zprobrc", "carried on\n", 0o600)
+			world.WriteFile(".probdir", "a file where the folder belongs\n", 0o600)
+			destination = world.Path(".probdir", "inner")
+		}
+
+		result := world.Run(test.command, probeKey).ExpectExit(1)
+
+		stderr := result.StderrText()
+		if want := copyFailurePrefix + source + " to " + destination + ": "; !strings.Contains(stderr, want) {
+			t.Errorf("%s stderr = %q, want the per-file failure line %q", test.command, result.Stderr, want)
+		}
+		if want := test.summary + "1 file(s) could not be copied:"; !strings.Contains(stderr, want) {
+			t.Errorf("%s stderr = %q, want the end-of-run summary %q", test.command, result.Stderr, want)
+		}
+		if want := "\n  " + source; !strings.Contains(stderr, want) {
+			t.Errorf("%s stderr = %q, want the failed path listed under the summary as %q", test.command, result.Stderr, want)
+		}
+		// The run carried on: the file after the failure in sorted order was
+		// copied, which is the whole of "failures flow up as data, not as
+		// control flow".
+		if test.command == "backup" {
+			expectContent(t, world.Mackup(".zprobrc"), "carried on\n")
+		} else {
+			expectContent(t, world.Path(".zprobrc"), "carried on\n")
+		}
+	}
+}
+
+// -- Verbose: appspec/01 section 3 and appspec/07's header ------------------
+
+func TestVerbosePrintsTheLongProgressFormWithAbsolutePaths(t *testing.T) {
+	// appspec/06's progress line in its second form: "<verb>\n  <src>\n
+	// to\n  <dst> ...", which appspec/01 section 3 describes as swapping "short
+	// progress lines for long ones (full absolute source/destination paths)".
+	//
+	// The short form must be GONE, not merely joined by the long one: the two
+	// are one line in two spellings, and a program printing both would say
+	// everything twice for every file in the run.
+	world := newSyncWorld(t, ".probrc")
+	world.WriteFile(".probrc", "home\n", 0o600)
+
+	result := world.Run("--verbose", "backup", probeKey).ExpectExit(0).ExpectSilentStderr()
+
+	want := backupVerb + "\n  " + world.Path(".probrc") + "\n  to\n  " + world.Mackup(".probrc") + " ..."
+	if !strings.Contains(result.StdoutText(), want) {
+		t.Errorf("--verbose backup stdout = %q, want the long progress form %q", result.Stdout, want)
+	}
+	if strings.Contains(result.StdoutText(), backupVerb+" .probrc ...") {
+		t.Errorf("--verbose backup stdout = %q, want the short progress line replaced by the long one, not joined by it", result.Stdout)
+	}
+}
+
+func TestTheVerbosePerAppHeaderIsABoldNameBetweenBlueRules(t *testing.T) {
+	// appspec/07: "per-app verbose header uses blue (34) rules around a bold
+	// app name". Asserted against the raw bytes, because the claim IS the
+	// escape sequences -- the stripped text is the same three words whatever
+	// colour they were written in.
+	//
+	// The name is the definition's, not the key: the header is the label a
+	// user reads to know whose files are scrolling past, and appspec/05 makes
+	// the human name the thing a definition carries for that purpose.
+	//
+	// Verbose only. Without the flag the header is not printed at all, which
+	// appspec/01 section 3 makes part of what verbose ADDS -- and which keeps
+	// a bare backup from naming every application in the catalog whether it
+	// had anything to do or not.
+	world := newSyncWorld(t, ".probrc")
+	world.WriteFile(".probrc", "home\n", 0o600)
+
+	result := world.Run("--verbose", "backup", probeKey).ExpectExit(0).ExpectSilentStderr()
+
+	want := "\x1b[34m--- \x1b[1mProbe\x1b[0m\x1b[34m ---\x1b[0m"
+	if !strings.Contains(result.Stdout, want) {
+		t.Errorf("--verbose backup stdout = %q, want the header %q: blue rules around a bold name", result.Stdout, want)
+	}
+
+	plain := world.Run("backup", probeKey).ExpectExit(0)
+	if strings.Contains(plain.StdoutText(), "--- Probe ---") {
+		t.Errorf("backup stdout = %q, want no per-app header without --verbose", plain.Stdout)
+	}
+}
+
+func TestVerboseSaysAFileIsAlreadyInSync(t *testing.T) {
+	// The second of appspec/06's two verbose traces for this operation: "if
+	// identical, skip (verbose prints '<f> already in sync, skipping')".
+	//
+	// Verbose is observationally pure (appspec/01 section 3: "it changes only
+	// what is printed, never what is done or the exit code"), so the trace
+	// arrives over a run that still does nothing at all -- which is what the
+	// snapshot is for. A program that "checked" identity by copying and then
+	// reporting it would satisfy the message and fail here.
+	world := newSyncWorld(t, ".probrc")
+	world.WriteFile(".probrc", "same\n", 0o600)
+	world.WriteMackup(".probrc", "same\n", 0o600)
+
+	before := world.Snapshot()
+	result := world.Run("--verbose", "backup", probeKey).ExpectExit(0).ExpectSilentStderr()
+
+	if want := ".probrc already in sync, skipping"; !strings.Contains(result.StdoutText(), want) {
+		t.Errorf("--verbose backup stdout = %q, want the trace %q", result.Stdout, want)
+	}
+	world.ExpectUnchanged(before)
 }
