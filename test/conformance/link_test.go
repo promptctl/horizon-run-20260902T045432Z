@@ -485,6 +485,15 @@ func TestAFailureInsideLinkInstallStopsTheRunMidWay(t *testing.T) {
 	// destination's parent belongs, which is portable and needs no permission
 	// games: the stat of the mackup path returns ENOTDIR, which is neither
 	// absence nor a copy, so the guard ahead of step 3 stops the run.
+	//
+	// What this case does NOT observe is that guard. Remove it and the run
+	// reaches syncfs.Copy, which fails at the same ENOTDIR one call later with
+	// the same exit code, the same untouched third file and the same path in
+	// the diagnostic -- every assertion below still passes. That is
+	// TestAMackupPathThatCannotBeInspectedStopsBeforeTheCopyRatherThanInsideIt's
+	// job, on this same fixture; the two are separate because the observable
+	// that tells the guard from the copy is not one the fail-hard contract
+	// cares about.
 	world := newSyncWorld(t, ".afirst", ".mdir/inner", ".zlast")
 	world.WriteFile(".afirst", "transitioned\n", 0o600)
 	world.WriteFile(".mdir/inner", "cannot land\n", 0o600)
@@ -503,6 +512,55 @@ func TestAFailureInsideLinkInstallStopsTheRunMidWay(t *testing.T) {
 	expectLinkedInto(t, world.Path(".afirst"), world.Mackup(".afirst"), "transitioned\n")
 	expectRealFile(t, world.Path(".zlast"))
 	expectAbsent(t, world.Mackup(".zlast"))
+}
+
+func TestAMackupPathThatCannotBeInspectedStopsBeforeTheCopyRatherThanInsideIt(t *testing.T) {
+	// appspec/06 splits this command's steps 3 and 4 on whether "a copy already
+	// exists at the mackup path". A stat of that path which fails for a reason
+	// OTHER than its absence has answered neither question, so the procedure may
+	// not take either branch -- and the branch it would fall into is step 4,
+	// which copies home over that path (syncfs.Copy does not require an absent
+	// destination) and then DELETES THE HOME FILE. The prompt of step 3 is the
+	// only thing between an uninspectable storage copy and its silent
+	// replacement by a file whose original is then removed.
+	//
+	// The fixture is TestAFailureInsideLinkInstallStopsTheRunMidWay's -- a
+	// regular file where the mackup path's parent belongs, which is ENOTDIR and
+	// not ENOENT -- and this case exists BECAUSE that one cannot see the guard.
+	// Both spellings exit non-zero and both name the mackup path, since a copy
+	// that reaches syncfs.Copy fails at the same ENOTDIR one call later. Removing
+	// the guard leaves that case entirely green.
+	//
+	// What tells them apart is WHICH path the diagnostic names. The guard has
+	// only looked at storage, so it names storage alone; a failure inside the
+	// copy names both ends of the copy it attempted. Asserting that the home
+	// path is absent from stderr is therefore the assertion that the run stopped
+	// before it had a source to name -- the observable form of "no comparison,
+	// no prompt, no write was attempted".
+	//
+	// The stronger shape -- an uninspectable mackup path that the copy could
+	// nonetheless write over, so that the home file is actually lost -- is not
+	// constructible: a stat of a leaf needs only search permission on its
+	// parent, so nothing can deny the stat while still admitting the write.
+	// sync_test.go's TestADestinationThatCannotBeInspectedIsAFailureAndNotAn-
+	// Absence records the same limit for the copy commands and asserts the
+	// predicate instead, which is what this does.
+	world := newSyncWorld(t, ".mdir/inner")
+	world.WriteFile(".mdir/inner", "must not be touched\n", 0o600)
+	world.WriteMackup(".mdir", "a file where the folder belongs\n", 0o600)
+
+	result := world.Run("link", "install", probeKey).ExpectFailureExit()
+
+	if stderr := result.StderrText(); !strings.Contains(stderr, world.Mackup(".mdir", "inner")) {
+		t.Errorf("link install stderr = %q, want a diagnostic naming the storage path %s it could not inspect", result.Stderr, world.Mackup(".mdir", "inner"))
+	}
+	if stderr := result.StderrText(); strings.Contains(stderr, world.Path(".mdir", "inner")) {
+		t.Errorf("link install stderr = %q, want it to name the storage path ALONE: naming %s too means the run reached the copy instead of stopping at the inspection", result.Stderr, world.Path(".mdir", "inner"))
+	}
+	// Nothing was attempted: the home file is still the real one and no storage
+	// copy was made beside the file that is blocking the path.
+	expectRealFile(t, world.Path(".mdir", "inner"))
+	expectContent(t, world.Path(".mdir", "inner"), "must not be touched\n")
 }
 
 func TestLinkInstallLeavesTheHomeFileWhereItIsUntilTheCopyHasLanded(t *testing.T) {
