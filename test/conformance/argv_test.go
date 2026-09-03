@@ -394,7 +394,7 @@ func TestEveryInvocationFormIsAcceptedAndReachesItsCommand(t *testing.T) {
 	// when the program is broken in some other way, or prints its usage block
 	// under a different first word.
 	//
-	// The six landed forms each carry the stdout fragment only their own
+	// The eight landed forms each carry the stdout fragment only their own
 	// command produces, which is the replacement ExpectNotImplemented's doc
 	// promises for each use "as that command's ticket lands". Exit 0 and a
 	// silent stderr is NOT that replacement: a copy form run against a world
@@ -402,18 +402,20 @@ func TestEveryInvocationFormIsAcceptedAndReachesItsCommand(t *testing.T) {
 	// reached its own arm, the other direction's, or no arm at all. Observed,
 	// by dispatching backup to restoreDirection and watching every row here
 	// pass -- and again by answering `show` with list's output, which this
-	// case also could not see. The two remaining link forms still report
+	// case also could not see. The two `link uninstall` forms still report
 	// themselves unimplemented, from dispatch, which is the same positive
 	// assertion in the only shape available to a command whose ticket is still
 	// open.
 	//
 	// Hence the file each acting world is seeded with, on the side that
 	// command reads from: a home file for backup and for link install, a
-	// Mackup-folder file for restore. Without one there is nothing to carry
-	// across and nothing to print, and the progress line naming it is what says
-	// which way the run went. link install's fragment is its own verb rather
-	// than backup's, which is what distinguishes the two arms here: both read
-	// the home file, and only the word differs at this point in the run.
+	// Mackup-folder file for restore and for `link`. Without one there is
+	// nothing to carry across and nothing to print, and the progress line
+	// naming it is what says which way the run went. link install's fragment is
+	// its own verb rather than backup's, which is what distinguishes the two
+	// arms here: both read the home file, and only the word differs at this
+	// point in the run. `link` and restore read the same storage file and are
+	// told apart the same way, by a word of their own.
 	//
 	// newSyncWorld supplies the rest, for the reasons its own comment gives:
 	// a resolvable config and storage root, because appspec/02 puts the config
@@ -448,8 +450,8 @@ func TestEveryInvocationFormIsAcceptedAndReachesItsCommand(t *testing.T) {
 		{args: []string{"backup", probeKey}, cmd: "backup", want: backupVerb + " " + probeFile + " ..."},
 		{args: []string{"restore"}, cmd: "restore", want: restoreVerb + " " + probeFile + " ..."},
 		{args: []string{"restore", probeKey}, cmd: "restore", want: restoreVerb + " " + probeFile + " ..."},
-		{args: []string{"link"}, cmd: "link"},
-		{args: []string{"link", probeKey}, cmd: "link"},
+		{args: []string{"link"}, cmd: "link", want: joinVerb + " " + probeFile + " ..."},
+		{args: []string{"link", probeKey}, cmd: "link", want: joinVerb + " " + probeFile + " ..."},
 		{args: []string{"link", "install"}, cmd: "link install", want: linkVerb + " " + probeFile + " ..."},
 		{args: []string{"link", "install", probeKey}, cmd: "link install", want: linkVerb + " " + probeFile + " ..."},
 		{args: []string{"link", "uninstall"}, cmd: "link uninstall"},
@@ -459,7 +461,7 @@ func TestEveryInvocationFormIsAcceptedAndReachesItsCommand(t *testing.T) {
 		switch test.cmd {
 		case "backup", "link install":
 			world.WriteFile(probeFile, "from home\n", 0o644)
-		case "restore":
+		case "restore", "link":
 			world.WriteMackup(probeFile, "from storage\n", 0o600)
 		}
 		if test.want == "" {

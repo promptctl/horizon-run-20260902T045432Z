@@ -71,21 +71,62 @@ func TestLinkableSourceReadsAnUnreadableHomePathAsAbsent(t *testing.T) {
 func TestLinkInstallsTwoProgressWordsAreTheOnesAppspec06Writes(t *testing.T) {
 	// appspec/06 step 2 gives this one command two different words: "Linking
 	// <f> ..." in the short form and "Backing up\n ... " in the verbose one.
-	// The pair is data for that reason, and this pins the surprising half --
+	// The form is data for that reason, and this pins the surprising half --
 	// the verbose word is BACKUP's, which reads like a copy-paste slip and is
 	// what the specification writes.
 	//
 	// The comparison against backupDirection.verb is the point: spelling the
 	// literal twice would let one of them be "corrected" without the other
-	// noticing, and the claim is that they are the same word.
-	if linkInstallVerbs.short != "Linking" {
-		t.Errorf("link install's short progress word is %q, want %q", linkInstallVerbs.short, "Linking")
+	// noticing, and the claim is that they are the same word. Compared through
+	// copyProgress rather than against a hand-written template, so that the
+	// second claim is the one that matters -- link install prints the SAME
+	// four-line verbose shape the copy commands do, which is what `link`, one
+	// door along, does not.
+	if linkInstallProgress.short != "Linking" {
+		t.Errorf("link install's short progress word is %q, want %q", linkInstallProgress.short, "Linking")
 	}
-	if linkInstallVerbs.long != backupDirection.verb {
-		t.Errorf("link install's verbose progress word is %q, want backup's %q", linkInstallVerbs.long, backupDirection.verb)
+	if want := copyProgress("Linking", backupDirection.verb); linkInstallProgress != want {
+		t.Errorf("link install's progress form is %+v, want backup's word in the copy shape: %+v", linkInstallProgress, want)
 	}
-	if linkInstallVerbs.short == linkInstallVerbs.long {
-		t.Errorf("link install's two progress words are both %q; appspec/06 gives it different words in the two forms", linkInstallVerbs.short)
+	if strings.HasPrefix(linkInstallProgress.long, linkInstallProgress.short) {
+		t.Errorf("link install's verbose form opens with %q, the short word; appspec/06 gives it different words in the two forms", linkInstallProgress.short)
+	}
+}
+
+func TestOnlyLinuxAppliesTheLibraryRuleAndOnlyToPathsUnderIt(t *testing.T) {
+	// appspec/06 step 1's third condition for `link`, and appspec/00 "Platform
+	// assumptions" item 2: "on Linux, a file whose home path is under
+	// ~/Library/ is not synced (skipped); on macOS there is no such
+	// restriction."
+	//
+	// Both platforms are asked, which is the whole reason the rule is a pure
+	// function of goos: the conformance suite can only ever observe the machine
+	// it runs on, and a rule whose content is "these two platforms differ" is
+	// half untested there. The darwin rows are not padding -- a program that
+	// skipped Library paths everywhere would satisfy every Linux row.
+	//
+	// The two near-misses are the prefix's edges. "Library" alone is the
+	// directory itself rather than something under it, which is how appspec/06
+	// words the rule; "Librarian.cfg" is a path a separator-less prefix test
+	// would have skipped on Linux for no reason at all.
+	for _, test := range []struct {
+		goos     string
+		relative string
+		want     bool
+	}{
+		{"linux", "Library/Preferences/com.apple.Terminal.plist", false},
+		{"linux", "Library/Fonts", false},
+		{"linux", ".vimrc", true},
+		{"linux", "Library", true},
+		{"linux", "Librarian.cfg", true},
+		{"linux", ".config/Library/thing", true},
+		{"darwin", "Library/Preferences/com.apple.Terminal.plist", true},
+		{"darwin", "Library", true},
+		{"darwin", ".vimrc", true},
+	} {
+		if got := linkableOnPlatform(test.goos, test.relative); got != test.want {
+			t.Errorf("linkableOnPlatform(%s, %s) = %v, want %v", test.goos, test.relative, got, test.want)
+		}
 	}
 }
 

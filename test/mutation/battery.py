@@ -2038,8 +2038,14 @@ MUTATIONS = [
  # with it. Skipping the prompt does not merely lose a question: the yes-arm's
  # delete goes with it, so the existing storage copy is overwritten unasked and
  # the home file is then removed.
+ # The anchor carries the line above it because `link`'s per-file procedure
+ # now has the same shape one function down -- the two commands ask the same
+ # question of opposite ends -- so "\tif err == nil {" alone matches twice.
+ # A repl that matches twice is refused rather than applied, which is what
+ # BROKEN-ANCHOR reported the moment that function landed.
  ("the replace-in-backup prompt is skipped", [repl(LK,
-   "\tif err == nil {", "\tif false {\n\t\t_ = existing")],
+   "\t\treturn linkFailure(err, \"inspect %s\", mackupPath)\n\t}\n\tif err == nil {",
+   "\t\treturn linkFailure(err, \"inspect %s\", mackupPath)\n\t}\n\tif false {\n\t\t_ = existing")],
    "FAIL: TestLinkInstallPromptsBeforeReplacingAnExistingBackupAndNamesIt"),
    # rig: TestDecliningTheLinkInstallPromptLeavesBothSidesAloneAndExitsZero,
    #      TestEndOfInputAtTheLinkInstallPromptEndsTheRunUnguarded,
@@ -2077,8 +2083,8 @@ MUTATIONS = [
  # this command, so a dry run that printed nothing would fail the promise's
  # other half and a dry run that printed and then acted fails this one.
  ("link install's dry-run stop is dropped", [repl(LK,
-   "\tr.progress(linkInstallVerbs, relative, homePath, mackupPath)\n\tif r.dryRun {\n\t\treturn nil\n\t}",
-   "\tr.progress(linkInstallVerbs, relative, homePath, mackupPath)")],
+   "\tr.progress(linkInstallProgress, relative, homePath, mackupPath)\n\tif r.dryRun {\n\t\treturn nil\n\t}",
+   "\tr.progress(linkInstallProgress, relative, homePath, mackupPath)")],
    "FAIL: TestLinkInstallDryRunStopsAtTheProgressLineAndMutatesNothing"),
    # rig: TestLinkInstallDryRunStillRunsTheFolderCreationGate,
    #      TestLinkInstallDryRunStopsAtTheProgressLineAndMutatesNothing
@@ -2152,8 +2158,8 @@ MUTATIONS = [
  # [rig: ...] note carries the conformance half, and the two are different
  # cases rather than one seen twice.
  ("link install's verbose progress uses its short word", [repl(LK,
-   'var linkInstallVerbs = progressVerbs{short: "Linking", long: "Backing up"}',
-   'var linkInstallVerbs = progressVerbs{short: "Linking", long: "Linking"}')],
+   'var linkInstallProgress = copyProgress("Linking", "Backing up")',
+   'var linkInstallProgress = copyProgress("Linking", "Linking")')],
    "FAIL: TestLinkInstallsTwoProgressWordsAreTheOnesAppspec06Writes"),
    # rig: TestLinkInstallsVerboseProgressUsesTheBackupWordAndAbsolutePaths
 

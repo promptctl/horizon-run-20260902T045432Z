@@ -179,39 +179,64 @@ func (e *executor) trace(format string, args ...any) {
 	e.sayLines(ui.Verbose, format, args...)
 }
 
-// progressVerbs is the pair of words one command puts at the head of its
-// progress line: the one used in the short form, and the one used in the
-// verbose four-line form.
+// A progressForm is one command's progress line of appspec/06, in the two
+// forms the run mode chooses between.
 //
-// A pair and not a single word, because appspec/06 gives link install two
-// different ones -- "Linking <f> ..." short, "Backing up\n  <home>\n  to\n
-// <mackup> ..." verbose -- while backup and restore use the same word in both.
-// Modelling that as one field with a special case at the call site would put a
-// command's wording inside the shared executor; modelling it as data keeps the
+// Two fields and not one word, because appspec/06 varies BOTH halves across
+// the five commands and varies them independently. link install uses two
+// different words -- "Linking <f> ..." short against "Backing up\n  <home>\n
+// to\n  <mackup> ..." verbose -- where backup and restore use one word twice.
+// And `link` changes the verbose SHAPE as well as the word: appspec/06 writes
+// it as "Restoring\n  linking <home>\n  to      <mackup> ...", three lines
+// where the copy commands print four, with the destination on the "to" line
+// rather than below it.
+//
+// So the verbose half is a template rather than a verb. Modelling it as a verb
+// and special-casing the one command whose shape differs would put that
+// command's layout inside the shared executor; modelling it as data keeps the
 // executor able to say "print this command's progress line" and nothing more.
-type progressVerbs struct {
+// copyProgress builds the shape three of the five share, so that generality
+// costs those three nothing.
+type progressForm struct {
+	// short is the word that opens the short form, "<short> <f> ...".
 	short string
-	long  string
+	// long is the whole verbose form, as a format template given the absolute
+	// source and destination paths in that order.
+	long string
+}
+
+// copyProgress is the four-line verbose shape of appspec/06 -- "<verb>\n
+// <src>\n  to\n  <dst> ..." -- which backup, restore and link install all
+// print and `link` does not.
+//
+// A constructor rather than three copies of the template, for the reason
+// appspec/01 section 1 gives about backup and restore generally: three
+// spellings of one layout are three chances for it to drift, and the drift
+// would be invisible until someone compared two commands' verbose output side
+// by side.
+func copyProgress(short, long string) progressForm {
+	return progressForm{short: short, long: long + "\n  %s\n  to\n  %s ..."}
 }
 
 // progress prints appspec/06's progress line, in whichever of its two forms the
 // run mode calls for.
 //
-// Short: "<short verb> <f> ...". Verbose: the four-line form with absolute
-// paths, which appspec/06 writes as "<long verb>\n  <src>\n  to\n  <dst> ...".
+// Short: "<short verb> <f> ...", which every command spells the same way and
+// which is therefore built here. Verbose: the command's own template, filled
+// with the absolute source and destination.
 //
 // ui.Progress in both forms. Verbose changes WHICH progress line is printed,
 // not what class of message it is -- appspec/01 section 3 says verbose "swaps
 // short progress lines for long ones", and appspec/07 lists the per-file
 // progress lines under stdout without qualification. Only the skip traces are
 // ui.Verbose.
-func (e *executor) progress(verbs progressVerbs, relative, src, dst string) {
+func (e *executor) progress(form progressForm, relative, src, dst string) {
 	e.flushHeader()
 	if !e.verbose {
-		e.streams.Sayf(ui.Progress, "%s %s ...", verbs.short, relative)
+		e.streams.Sayf(ui.Progress, "%s %s ...", form.short, relative)
 		return
 	}
-	e.sayLines(ui.Progress, "%s\n  %s\n  to\n  %s ...", verbs.long, src, dst)
+	e.sayLines(ui.Progress, form.long, src, dst)
 }
 
 // sayLines writes a formatted message one line per Say.
