@@ -13,6 +13,7 @@ package conformance
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -23,16 +24,27 @@ import (
 // The superuser check is not ceremony, and it is the same one denyReads makes:
 // root searches a directory with no execute bit, so the fixture would deny
 // nothing and the case would assert nothing.
-func denySearch(t *testing.T, dir string) {
+//
+// child is the name of something that EXISTS inside dir, and the last check
+// stats it to confirm the mode actually denied the search rather than assuming
+// the filesystem enforces one. It is a parameter because the two callers pass
+// different trees: a probe path hardcoded for one of them stats a path that is
+// simply absent for the other, which returns ENOENT forever and makes a guard
+// that can never fire look like one that never needed to.
+func denySearch(t *testing.T, dir, child string) {
 	t.Helper()
 	if os.Geteuid() == 0 {
 		t.Skip("the superuser searches a directory with no execute bit, so this arrangement proves nothing")
+	}
+	if _, err := os.Stat(filepath.Join(dir, child)); err != nil {
+		t.Fatalf("the fixture is wrong, not the filesystem: %s is not there to be denied: %v",
+			filepath.Join(dir, child), err)
 	}
 	if err := os.Chmod(dir, 0o600); err != nil {
 		t.Fatalf("removing the search bit from %s: %v", dir, err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	if _, err := os.Stat(dir + "/Mackup"); err == nil {
+	if _, err := os.Stat(filepath.Join(dir, child)); err == nil {
 		t.Skip("this filesystem does not deny a search by mode, so the fixture denies nothing")
 	}
 }
@@ -61,7 +73,7 @@ func TestAMackupFolderThatCannotBeInspectedIsNotReportedAsMissing(t *testing.T) 
 	for _, command := range []string{"backup", "restore"} {
 		world := newSyncWorld(t, ".probrc")
 		world.WriteMackup(".probrc", "storage\n", 0o600)
-		denySearch(t, world.Path("storage"))
+		denySearch(t, world.Path("storage"), "Mackup")
 
 		result := world.Run(command, probeKey).ExpectExit(1).ExpectSilentStdout()
 
@@ -100,7 +112,7 @@ func TestAStorageRootThatCannotBeInspectedIsNotReportedAsMissing(t *testing.T) {
 		t.Fatalf("creating the storage root: %v", err)
 	}
 	world.WriteFile(".mackup/"+probeKey+".cfg", probeDefinition(".probrc"), 0o600)
-	denySearch(t, world.Path("outer"))
+	denySearch(t, world.Path("outer"), "storage")
 
 	result := world.Run("restore", probeKey).ExpectExit(1).ExpectSilentStdout()
 

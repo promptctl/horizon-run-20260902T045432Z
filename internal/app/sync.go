@@ -63,8 +63,9 @@ type direction struct {
 	// verb is the progress verb: "Backing up" or "Recovering".
 	verb string
 	// driftPhrasing fills the "<f> differs between <...>:" header: "home and
-	// Mackup" or "Mackup and home". The order matches the direction, so the
-	// header reads source-first exactly as the diff below it is rendered.
+	// Mackup" or "Mackup and home", source first. The diff below it runs the
+	// other way round, and deliberately: its REMOVED side is the destination,
+	// the content about to be replaced.
 	driftPhrasing string
 	// location is the destination-location noun the replace prompt names:
 	// "the Mackup folder" or "your home folder".
@@ -399,13 +400,13 @@ func (r *syncRun) file(relative string) error {
 
 	r.progress(relative, src, dst)
 	if r.dryRun {
-		// appspec/01 section 3: dry-run "prints the progress line it would
-		// emit for each acted-on file, then performs no copy, move, delete, or
-		// symlink". The prompt is inside the mutation it guards, so it is not
-		// shown either -- a dry run that asked "are you sure you want to
-		// replace it?" would be asking about a replacement it is not going to
-		// perform, and under --force it would perform nothing while reporting
-		// a decision.
+		// Above the header, the diff AND the prompt, because appspec/06 step
+		// 3 puts all three behind one condition: "Then, IF NOT DRY-RUN: ...
+		// print the header ... followed by the diff ..., then prompt". A dry
+		// run owes a differing file the progress line and nothing further
+		// (appspec/01 section 3). The prompt is the plainest of the three: it
+		// would ask about a replacement that is not going to happen, and under
+		// --force report a decision while performing nothing.
 		return nil
 	}
 
