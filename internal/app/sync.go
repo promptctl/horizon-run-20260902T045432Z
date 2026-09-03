@@ -151,6 +151,9 @@ type syncRun struct {
 	// up as data, not as control flow -- the loop never aborts and the process
 	// never exits from inside the per-file copy."
 	failed []string
+	// pendingHeader is the application whose verbose header is owed but not yet
+	// printed, or "" when none is. See header and flushHeader.
+	pendingHeader string
 }
 
 // runSync is the whole of backup and restore: gate, fan out, aggregate, exit.
@@ -186,7 +189,12 @@ func runSync(p pipeline, dir direction) int {
 	if err := run.fanOut(keys); err != nil {
 		// The one way out of the loop that is not a per-file failure: end of
 		// input at a prompt (appspec/07, unguarded). Everything a copy can do
-		// wrong is already in run.failed by now.
+		// wrong is already in run.failed by now -- which is why the summary is
+		// emitted here rather than skipped: appspec/06 makes it the end-of-run
+		// report of a run that could not copy everything, and a run that ends
+		// this way could not. Without it the user gets the per-file error line
+		// and never the list of which files to go back to.
+		run.summarize()
 		return reportFatal(p.streams, err)
 	}
 	return run.report()
@@ -234,7 +242,27 @@ func (r *syncRun) fanOut(keys []string) error {
 	return nil
 }
 
-// header prints the per-application verbose header of appspec/07: "per-app
+// header records which application's verbose header is owed. It does not print
+// it; flushHeader does, on that application's first line of output.
+//
+// Deferred rather than printed, because printing it here says an application's
+// name for an application that turns out to have nothing to do -- which is the
+// hazard the old comment on this function named and then did not avoid.
+// appspec/06's step 1 skips a file whose source does not exist SILENTLY, so on
+// an unscoped run the overwhelming majority of the catalog produces no output
+// at all: measured on a home with one real file, an eager header gave 623
+// stdout lines of which 614 were headers. The nine lines that were the actual
+// run are what verbose exists to show.
+//
+// Nothing in the specification asks for the eager shape. appspec/01 section 3
+// says verbose "swaps short progress lines for long ones (full absolute
+// source/destination paths, a per-app header rule)" and appspec/07 gives the
+// header its colours; neither promises one per catalog key.
+func (r *syncRun) header(key string) {
+	r.pendingHeader = key
+}
+
+// flushHeader prints the per-application verbose header of appspec/07: "per-app
 // verbose header uses blue (34) rules around a bold app name".
 //
 // One line, and one Say, built from two levels with ui.Colorize -- which is
@@ -242,15 +270,17 @@ func (r *syncRun) fanOut(keys []string) error {
 // three Says it would be three messages; written as one uncoloured string it
 // would lose the bold name appspec/07 asks for.
 //
-// Verbose only. appspec/01 section 3 says verbose "swaps short progress lines
-// for long ones (full absolute source/destination paths, a per-app header
-// rule)" -- the header is one of the things verbose adds, and printing it
-// otherwise would put an application's name on stdout for an application that
-// turns out to have nothing to do.
-func (r *syncRun) header(key string) {
-	if !r.verbose {
+// Called from trace and progress and from nowhere else, which is a claim about
+// this file rather than a convention: those two are the only methods that can
+// produce an application's FIRST line. The drift header, the replace prompt and
+// fail are each reachable only after progress has run for the same file, so a
+// flush at any of them would be one that has already happened.
+func (r *syncRun) flushHeader() {
+	if !r.verbose || r.pendingHeader == "" {
 		return
 	}
+	key := r.pendingHeader
+	r.pendingHeader = ""
 	name, known := r.apps.Name(key)
 	if !known {
 		name = key
@@ -405,6 +435,7 @@ func (r *syncRun) file(relative string) error {
 // progress lines under stdout without qualification. Only the skip traces are
 // ui.Verbose.
 func (r *syncRun) progress(relative, src, dst string) {
+	r.flushHeader()
 	if !r.verbose {
 		r.streams.Sayf(ui.Progress, "%s %s ...", r.dir.verb, relative)
 		return
@@ -425,6 +456,7 @@ func (r *syncRun) trace(format string, args ...any) {
 	if !r.verbose {
 		return
 	}
+	r.flushHeader()
 	r.streams.Sayf(ui.Verbose, format, args...)
 }
 
@@ -459,23 +491,39 @@ func (r *syncRun) fail(src, dst string, err error) {
 	r.failed = append(r.failed, src)
 }
 
-// report writes the end-of-run summary of appspec/06's partial-failure
-// contract and returns the exit code.
+// summarize writes the end-of-run summary of appspec/06's partial-failure
+// contract.
 //
-// "So a backup or restore that could not copy everything NEVER exits 0 -- the
-// non-zero exit and the stderr summary distinguish a partial run from a
-// complete one (00, promise 9)."
+// Separate from the exit code because the two have different audiences. Every
+// way a run can END owes the summary -- including the fatal path, where the
+// run stops at an unanswerable prompt with failures already collected -- while
+// only the ordinary path chooses an exit code from it. Written as one function
+// the fatal path had to call it and discard the result, which reads as an
+// oversight whether or not it is one.
 //
 // The count comes from the same slice the lines come from, so the two cannot
 // disagree -- the lesson `list`'s count trailer records, one command over.
-func (r *syncRun) report() int {
+func (r *syncRun) summarize() {
 	if len(r.failed) == 0 {
-		return ExitOK
+		return
 	}
 	r.streams.Sayf(ui.CopyFailure, "%s incomplete: %d file(s) could not be copied:",
 		r.dir.summaryNoun, len(r.failed))
 	for _, path := range r.failed {
 		r.streams.Say(ui.CopyFailure, "  "+path)
+	}
+}
+
+// report ends an ordinary run: the summary, then the exit code appspec/06 ties
+// to it.
+//
+// "So a backup or restore that could not copy everything NEVER exits 0 -- the
+// non-zero exit and the stderr summary distinguish a partial run from a
+// complete one (00, promise 9)."
+func (r *syncRun) report() int {
+	r.summarize()
+	if len(r.failed) == 0 {
+		return ExitOK
 	}
 	return ExitFailure
 }

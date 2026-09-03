@@ -1414,7 +1414,98 @@ func TestAFileThatCannotBeCopiedIsReportedAndTheRunCarriesOnAndExitsOne(t *testi
 	}
 }
 
+func TestTheIncompleteSummaryIsPrintedEvenWhenTheRunEndsAtAnUnanswerablePrompt(t *testing.T) {
+	// A run can both fail a copy and then die at a prompt it cannot answer, and
+	// the two contracts that cover those are separate: appspec/06 makes the
+	// "<Backup|Restore> incomplete:" summary the end-of-run report of a run
+	// that could not copy everything, and appspec/07 makes an unanswerable
+	// prompt an unguarded termination. Ending the second way does not repeal
+	// the first -- the summary is the only thing that names WHICH file needs
+	// attention, and dropping it leaves the run's stderr saying less than the
+	// failure it has already printed.
+	//
+	// Sorted order arranges it: ".probdir/inner" is copied (and fails, because
+	// a regular file sits where its destination's parent belongs) before
+	// ".zprobrc" is compared and prompted about. So a failure is recorded as
+	// data at the moment the prompt cannot be answered.
+	world := newSyncWorld(t, ".probdir/inner", ".zprobrc")
+	source := world.WriteFile(".probdir/inner", "home\n", 0o600)
+	world.WriteMackup(".probdir", "a file where the folder belongs\n", 0o600)
+	world.WriteFile(".zprobrc", "home\n", 0o600)
+	world.WriteMackup(".zprobrc", "storage\n", 0o600)
+
+	result := world.Run("backup", probeKey).ExpectFailureExit()
+
+	stderr := result.StderrText()
+	if want := backupIncomplete + "1 file(s) could not be copied:"; !strings.Contains(stderr, want) {
+		t.Errorf("backup stderr = %q, want the end-of-run summary %q even though the run ended at an unanswerable prompt", result.Stderr, want)
+	}
+	if want := "\n  " + source; !strings.Contains(stderr, want) {
+		t.Errorf("backup stderr = %q, want the failed path listed under the summary as %q", result.Stderr, want)
+	}
+	// Still the unguarded termination, and still ahead of nothing: the summary
+	// is the run's report and the diagnostic is its last word.
+	if !strings.Contains(stderr, "mackup: ") {
+		t.Errorf("backup stderr = %q, want the unguarded diagnostic appspec/07 gives an unanswerable prompt", result.Stderr)
+	}
+}
+
 // -- Verbose: appspec/01 section 3 and appspec/07's header ------------------
+
+func TestTheVerboseHeaderIsPrintedOnlyForAnApplicationThatPrintsSomething(t *testing.T) {
+	// appspec/01 section 3 makes the per-app header one of the things verbose
+	// ADDS, and appspec/06's step 1 skips a file whose source does not exist
+	// SILENTLY. Together those decide this: the header belongs to the output it
+	// heads, so an application that prints nothing is not announced.
+	//
+	// It matters at the scale the program actually runs at. Unscoped, the fan
+	// out walks the whole shipped catalog, and on any real home nearly every
+	// key has no file to copy -- so a header printed per key buries the few
+	// lines the run is about. Measured before this was fixed: 623 stdout lines
+	// for a home with one file in it, 614 of them headers.
+	//
+	// NO application is named, which is the only shape that can see it. Named,
+	// there is exactly one application and it always has something to do, so an
+	// eager header and a deferred one are the same bytes -- which is why the
+	// two cases above this one cannot catch it and this one is not redundant
+	// with them.
+	world := NewWorld(t)
+	world.UseMackupFolder()
+	world.WriteFile(".mackup/alpha.cfg", "[application]\nname = Acting\n\n[configuration_files]\n.a-probrc\n", 0o600)
+	world.WriteFile(".mackup/zulu.cfg", "[application]\nname = Quiet\n\n[configuration_files]\n.z-absent\n", 0o600)
+	world.WriteFile(".a-probrc", "home\n", 0o600)
+
+	result := world.Run("--verbose", "backup").ExpectExit(0).ExpectSilentStderr()
+
+	stdout := result.StdoutText()
+	if !strings.Contains(stdout, "--- Acting ---") {
+		t.Errorf("--verbose backup stdout = %q, want the header for the application that copied a file", result.Stdout)
+	}
+	// Quiet's one file does not exist, so its per-file procedure skips
+	// silently and it has nothing to head.
+	if strings.Contains(stdout, "--- Quiet ---") {
+		t.Errorf("--verbose backup stdout = %q, want NO header for an application whose files are all absent", result.Stdout)
+	}
+
+	// The claim generalised over the whole catalog, which is what makes this a
+	// bound rather than two spot checks: every header is followed by the output
+	// it heads. A header last in the run, or immediately followed by another
+	// header, is a header for an application that said nothing.
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "--- ") {
+			continue
+		}
+		if i+1 == len(lines) {
+			t.Errorf("--verbose backup stdout = %q, want no trailing header: %q heads nothing", result.Stdout, line)
+			continue
+		}
+		if strings.HasPrefix(lines[i+1], "--- ") {
+			t.Errorf("--verbose backup stdout = %q, want no header immediately followed by another (%q then %q): the first heads nothing",
+				result.Stdout, line, lines[i+1])
+		}
+	}
+}
 
 func TestVerbosePrintsTheLongProgressFormWithAbsolutePaths(t *testing.T) {
 	// appspec/06's progress line in its second form: "<verb>\n  <src>\n

@@ -52,6 +52,7 @@ FILES = ["test/conformance/harness_test.go", "test/conformance/argv_test.go",
          "internal/appdb/appdb.go", "internal/ini/ini.go",
          "internal/homepath/homepath.go",
          "internal/app/enumerate.go", "internal/app/stages.go",
+         "internal/app/sync.go",
          # The catalog is DATA, and these two are the first non-.go entries in
          # this list. A mutation to a definition file is only worth writing now
          # that `list` and `show` print what it holds -- see the appspec/05
@@ -112,6 +113,7 @@ IN = "internal/ini/ini.go"
 HP = "internal/homepath/homepath.go"
 EN = "internal/app/enumerate.go"
 SG = "internal/app/stages.go"
+SN = "internal/app/sync.go"
 CT = "internal/catalog/catalog.go"
 MK = "internal/catalog/applications/mackup.cfg"
 SY = "internal/syncfs/syncfs.go"
@@ -1230,6 +1232,39 @@ MUTATIONS = [
  #     Verified directly, not reasoned about.
  #   * Removing runCleanupCommand's os.Stat guard. exec's own ENOENT is
  #     discarded to the same effect. Both files carry a comment saying so.
+
+ # --- appspec/06 the two executor defects the adversarial review of PR #10 found
+ #
+ # Both are in internal/app/sync.go, both were REPRODUCED at the boundary before
+ # being fixed, and both are invisible to every unit package -- so unlike almost
+ # every other entry here, the `expect` of each is the CONFORMANCE diagnostic.
+ # That is not a slip: `make check` runs the unit packages first and stops there
+ # ON A FAILURE, and these do not fail there, so the run carries on to
+ # `make conformance` and that is the suite the gate actually stops at. Probed,
+ # not assumed -- `go test ./internal/...` is green under both mutations.
+
+ # The eager spelling, which is what the code did before the review. Deferring
+ # the header looks like indirection for its own sake until you run the program
+ # unscoped: appspec/06's step 1 skips an absent source SILENTLY, so on a real
+ # home nearly every one of the ~614 catalog keys prints nothing, and a header
+ # per key gave 623 stdout lines of which 614 were headers. This mutation is one
+ # line and restores exactly that.
+ ("the verbose header is printed eagerly", [repl(SN,
+   "func (r *syncRun) header(key string) {\n\tr.pendingHeader = key\n}",
+   "func (r *syncRun) header(key string) {\n\tr.pendingHeader = key\n\tr.flushHeader()\n}")],
+   "FAIL: TestTheVerboseHeaderIsPrintedOnlyForAnApplicationThatPrintsSomething"),
+   # rig: TestTheVerboseHeaderIsPrintedOnlyForAnApplicationThatPrintsSomething
+
+ # appspec/06's partial-failure summary, dropped on the one path that does not
+ # return through report(). A run that fails a copy and THEN dies at a prompt it
+ # cannot answer still owes the summary -- it is the only line naming which file
+ # to go back to. Exit is non-zero either way, so nothing about appspec/00
+ # promise 9 moves and no case asserting the exit code can see this.
+ ("the incomplete summary is dropped at an unanswerable prompt", [repl(SN,
+   "\t\trun.summarize()\n\t\treturn reportFatal(p.streams, err)",
+   "\t\treturn reportFatal(p.streams, err)")],
+   "FAIL: TestTheIncompleteSummaryIsPrintedEvenWhenTheRunEndsAtAnUnanswerablePrompt"),
+   # rig: TestTheIncompleteSummaryIsPrintedEvenWhenTheRunEndsAtAnUnanswerablePrompt
 
  # --- appspec/06 drift detection and the diff detail (macklebox-copy-sync-dpz.2)
  #
