@@ -60,15 +60,33 @@ FILES = ["test/conformance/harness_test.go", "test/conformance/argv_test.go",
          # on a .cfg it fails to parse and writes nothing, which is the
          # behavior these rely on rather than tolerate.
          "internal/catalog/catalog.go", "internal/catalog/applications/mackup.cfg",
-         # appspec/06's sync primitives and drift detection, added with the
-         # entries below rather than with the packages: each of these four is
-         # edited by at least one mutation now that backup and restore call
-         # into them. internal/syncfs/attributes.go, internal/drift/diff.go and
-         # the four internal/plist files are deliberately still absent -- every
-         # mutation that would edit them is parked, and a file listed here that
-         # no mutation edits is copied and restored for nothing.
+         # appspec/06's sync primitives, drift detection, the diff detail and
+         # the property-list reader, added with their entries rather than with
+         # the packages: each file here is edited by at least one mutation now
+         # that backup and restore call into all four packages.
+         #
+         # Two files of those packages are deliberately ABSENT, because the
+         # default for a file no mutation edits is to leave it out: it is
+         # copied and restored for nothing. internal/syncfs/attributes.go, all
+         # four of whose mutations are parked for the reason the appspec/06
+         # banner below gives; and internal/plist/plist.go, because the ten
+         # plist entries below reach the reader through binary.go, xml.go and
+         # format.go and none of them edits the value model itself.
+         #
+         # It is a default and not a law, and the list holds two standing
+         # exceptions so the next reader does not "tidy" one away. Both are
+         # files a future entry is expected to edit, kept listed so that entry
+         # is backed up on the day it lands rather than a commit later:
+         # test/conformance/harness_unix_test.go, whose reason is spelled out
+         # at the constants below, and the Makefile, which has been here
+         # unedited since the rig landed in #2. Nothing forces the issue either
+         # way -- the `untracked` guard further down refuses a mutation naming
+         # a file NOT in this list, which is the direction that loses work.
          "internal/syncfs/syncfs.go", "internal/syncfs/state.go",
-         "internal/drift/drift.go", "internal/drift/tree.go"]
+         "internal/drift/drift.go", "internal/drift/tree.go",
+         "internal/drift/diff.go",
+         "internal/plist/binary.go", "internal/plist/xml.go",
+         "internal/plist/format.go"]
 
 H = "test/conformance/harness_test.go"
 C = "internal/ui/color.go"
@@ -100,6 +118,12 @@ SY = "internal/syncfs/syncfs.go"
 SS = "internal/syncfs/state.go"
 DR = "internal/drift/drift.go"
 TD = "internal/drift/tree.go"
+DF = "internal/drift/diff.go"
+# The property-list reader is three files and not four: internal/plist/plist.go
+# holds the value model, and no mutation edits it. See the FILES note above.
+PB = "internal/plist/binary.go"
+PX = "internal/plist/xml.go"
+PF = "internal/plist/format.go"
 
 # SURVIVES marks an entry that must NOT break the gate. Most entries are
 # defects the suite has to catch; these are the opposite -- correct code that a
@@ -1217,20 +1241,15 @@ MUTATIONS = [
  # directory summary are observable at the boundary and the twelve entries
  # below are written.
  #
- # What is NOT written yet is the diff SHAPE and the property-list reader. Both
- # are reachable through Compare, but every case that could see them is a unit
- # case: the conformance suite asserts that a diff appears and what its two
- # sides are, and nothing at the boundary yet pins the context width, the hunk
- # merge, the range spelling, the per-line levels, or a single plist type. Those
- # entries would report RIG-BLIND, so they are parked below with the cases each
- # one is waiting on rather than written and left red.
+ # The diff SHAPE and the property-list reader waited one more commit and are
+ # the section below this one. That deferral said the conformance suite
+ # "asserts that a diff appears and what its two sides are" and pinned nothing
+ # about the context width, the hunk merge, the range spelling, the per-line
+ # levels or a single plist type; compare_test.go, compare_unix_test.go and
+ # plist_test.go pin all of it, so those entries are written rather than parked.
  #
  # As above, each `expect` is a UNIT diagnostic and the [rig: ...] note the
  # battery prints carries the conformance half.
- #
- # internal/drift/diff.go and the four internal/plist files are therefore NOT in
- # FILES yet: no entry here edits them, and a file in FILES that no mutation
- # edits is backed up for nothing. They go in with their entries.
 
  # appspec/06 "Drift detection", the comparison classes.
  #
@@ -1359,95 +1378,289 @@ MUTATIONS = [
    "FAIL: TestTwoPropertyListsThatDifferProduceADiffOfTheirStructures"),
    # rig: TestAPropertyListDiffShowsTheStructureAndNotTheMarkup
 
- # PARKED, with what each is waiting on. Every mutation below was injected on
- # dpz.2 and its killing UNIT case recorded, so none of this has to be
- # re-derived -- what is missing in each case is a conformance case, and the
- # ticket that owes it is named. Writing them now would report RIG-BLIND, which
- # is a battery failure wearing a finding's clothes.
+ # --- appspec/06 the diff SHAPE and the property-list reader (dpz.3) --------
  #
- # Waiting on a conformance case for the DIFF SHAPE. The suite asserts that a
- # diff appears and which side each line is on; nothing at the boundary pins
- # the context width, the hunk merge, the range spelling or the per-line level.
+ # The last of dpz.2's three deferrals, paid the way the other two were. Every
+ # entry below was parked with a note saying "waiting on a conformance case for
+ # X"; test/conformance/compare_test.go, compare_unix_test.go and plist_test.go
+ # are X, so the notes become entries and the notes are deleted rather than
+ # left standing beside the thing they asked for.
  #
- #   the diff has one line of context             context 3 -> 1
- #       TestTheDiffIsTheOneDiffWouldHavePrinted
- #   hunks never merge                            the neighbourhood marked is i..i
- #       TestChangesCloseTogetherShareAHunkAndFarApartDoNot
- #   a one-line range prints its count            span's count == 1 arm removed
- #       TestAOneLineRangeOmitsItsCount
- #   an empty range is numbered from one          span's zero arm uses start+1
- #       TestAnEmptyRangeIsNumberedTheWayDiffNumbersIt
- #   a context line is printed as an addition     Progress -> DiffAdded in render
- #       TestEachKindOfDiffLineCarriesTheLevelAppspec07GivesIt
- #   the no-newline marker is not emitted         markIncomplete returns unchanged
- #       TestTwoFilesDifferingOnlyInAFinalNewlineDifferAndSayHow
+ # Each was injected TWICE before it was written here, and both halves are
+ # observed rather than predicted. The `expect` is the UNIT diagnostic, taken
+ # by applying the mutation to a scratch tree and running `go test ./internal/...`
+ # -- ten seconds an entry, against the ninety a battery round costs to learn
+ # the same thing as a WRONG-DIAGNOSTIC. The `# rig:` name is what the
+ # conformance suite reported for that same mutation, taken the same way, which
+ # is the half that decides whether an entry is honest or is a RIG-BLIND report
+ # wearing a finding's clothes. Twenty-one written, twenty-one killed by both.
+
+ # appspec/06's diff detail is a unified diff, and these six are the shape of
+ # one: how much context a hunk carries, when two changes share a hunk, the two
+ # range spellings diff(1) uses, the appspec/07 level each kind of line is
+ # printed at, and the marker for a file that does not end in a newline. The
+ # suite could already see that a diff appeared and which side each line was
+ # on, which is what let all six survive it until compare_test.go.
+ ("the diff has one line of context", [repl(DF,
+   "const context = 3", "const context = 1")],
+   "FAIL: TestTheDiffIsTheOneDiffWouldHavePrinted"),
+   # rig: TestTheDiffCarriesThreeLinesOfContextOnEachSide
+
+ # i..i and not i-context..i+context: every change becomes its own hunk, which
+ # still renders and still shows the right lines. What is lost is the merge,
+ # and a diff that prints two @@ headers where diff(1) prints one is not the
+ # output appspec/06 promises even though every line in it is true.
+ ("hunks never merge", [repl(DF,
+   "\t\tfor j := i - context; j <= i+context; j++ {",
+   "\t\tfor j := i; j <= i; j++ {")],
+   "FAIL: TestChangesCloseTogetherShareAHunkAndFarApartDoNot"),
+   # rig: TestChangesCloseTogetherShareAHunkAndFarApartDoNot
+
+ # The two range spellings are diff(1) conventions, and both are the kind of
+ # detail a reimplementation gets almost right: a one-line range is a bare
+ # number rather than "n,1", and an empty range is numbered by the line BEFORE
+ # it rather than incremented.
+ ("a one-line range prints its count", [repl(DF,
+   "\tif count == 1 {\n\t\treturn fmt.Sprintf(\"%d\", start+1)\n\t}\n", "")],
+   "FAIL: TestAOneLineRangeOmitsItsCount"),
+   # rig: TestAOneLineRangeOmitsItsCountAndAnEmptyOneIsNumberedFromZero
+
+ ("an empty range is numbered from one", [repl(DF,
+   "\t\treturn fmt.Sprintf(\"%d,0\", start)",
+   "\t\treturn fmt.Sprintf(\"%d,0\", start+1)")],
+   "FAIL: TestAnEmptyRangeIsNumberedTheWayDiffNumbersIt"),
+   # rig: TestAOneLineRangeOmitsItsCountAndAnEmptyOneIsNumberedFromZero
+
+ # appspec/07 gives a context line ordinary progress and an added line the
+ # addition colour. Colouring context as an addition makes every unchanged line
+ # of every diff read as new -- which is a diff whose every line is present and
+ # whose meaning is inverted, and it is invisible to any case asserting text.
+ ("a context line is an addition", [repl(DF,
+   "lines = append(lines, Line{Level: ui.Progress, Text: \" \" + step.text})",
+   "lines = append(lines, Line{Level: ui.DiffAdded, Text: \" \" + step.text})")],
+   "FAIL: TestEachKindOfDiffLineCarriesTheLevelAppspec07GivesIt"),
+   # rig: TestEachKindOfDiffLineCarriesTheLevelAppspec07GivesIt
+
+ # The WHOLE body is replaced, not short-circuited with an early return. An
+ # added `return before, after` above the live arms leaves those arms
+ # unreachable, `go vet` says so, and the battery reports DOES-NOT-COMPILE --
+ # a mutation that never reaches the gate and an entry that proves nothing.
+ ("the no-newline marker is not emitted", [repl(DF,
+   "\tif beforeTerminated == afterTerminated {\n\t\treturn before, after\n\t}\n"
+   "\tif !beforeTerminated {\n\t\treturn append(append([]string(nil), before...), noNewline), after\n\t}\n"
+   "\treturn before, append(append([]string(nil), after...), noNewline)\n}",
+   "\t_, _ = beforeTerminated, afterTerminated\n\treturn before, after\n}")],
+   "FAIL: TestTwoFilesDifferingOnlyInAFinalNewlineDifferAndSayHow"),
+   # rig: TestTwoFilesDifferingOnlyInAFinalNewlineSayHow
+
+ # appspec/06's directory comparison, the three claims the existing cases could
+ # not see. The first is the classic shallow-comparison shortcut: two files of
+ # the same length are declared the same without reading either, which is
+ # exactly the check rsync's --size-only makes and exactly what a drift report
+ # must not do -- an edit that preserves a file's length is the common case for
+ # a preference file, not a contrived one.
+ ("a tree comparison stops at the sizes", [repl(DR,
+   "\tfirstBuffer := make([]byte, 32*1024)",
+   "\tfirstInfo, firstStatErr := first.Stat()\n"
+   "\tsecondInfo, secondStatErr := second.Stat()\n"
+   "\tif firstStatErr == nil && secondStatErr == nil && firstInfo.Size() == secondInfo.Size() {\n"
+   "\t\treturn true\n\t}\n"
+   "\tfirstBuffer := make([]byte, 32*1024)")],
+   "FAIL: TestADirectoryComparisonIsRecursiveAndNotAShallowStat"),
+   # rig: TestADirectoryComparisonReadsContentsAndNotJustSizes
+
+ # sort stays imported after this: union() below is its other user, so the
+ # deletion is one line and needs no import edit. Two of the entries further
+ # down DO need one, and the difference between them is worth the sentence --
+ # a deletion that leaves an import unused is a DOES-NOT-COMPILE, not a
+ # mutation.
+ ("the three lists are not sorted", [repl(TD,
+   "\t\tsort.Strings(group.names)\n", "")],
+   "FAIL: TestADirectoryComparisonListsTheThreeGroupsAppspec06AsksFor"),
+   # rig: TestTheDirectoryGroupsAreSortedWithinEachGroup
+
+ # The syncfs asymmetry from the other side, and the entry the old parked
+ # banner did not carry -- it was found by injection on this ticket rather than
+ # transcribed. internal/syncfs.copyTree classifies with a FOLLOWING stat, so a
+ # directory symlink inside a source tree is copied as real content; this walk
+ # has to follow too, or the comparison declares drift against a copy that is
+ # doing exactly what it was told. Both lines change: one os.Stat left behind
+ # is a comparison that disagrees with itself about which side to follow.
+ ("a tree entry is classified unfollowed", [repl(TD,
+   "\tsourceInfo, sourceErr := os.Stat(source)\n\ttargetInfo, targetErr := os.Stat(target)",
+   "\tsourceInfo, sourceErr := os.Lstat(source)\n\ttargetInfo, targetErr := os.Lstat(target)")],
+   "FAIL: TestASymlinkInsideATreeIsFollowedSoTheComparisonIsTheCopysFixedPoint"),
+   # rig: TestASymlinkedDirectoryInsideATreeMakesTheSecondBackupSilent
+
+ # The two unreadable-path entries, which needed a mode-0000 fixture and so
+ # waited on compare_unix_test.go rather than on the portable suite. Both are
+ # the same defect in appspec/06's terms: "identical" is the claim that needs
+ # evidence, and a file the process could not read supplies none. Reporting
+ # agreement about it is how a backup silently skips the one file it could not
+ # check.
+ ("an unreadable file is agreement", [repl(DR,
+   "\tsourceBytes, err := os.ReadFile(source)\n\tif err != nil {\n"
+   "\t\t// \"If either file is unreadable, treated as differing with no detail\n"
+   "\t\t// (plain prompt).\"\n\t\treturn differs()\n\t}\n"
+   "\ttargetBytes, err := os.ReadFile(target)\n\tif err != nil {\n\t\treturn differs()\n\t}",
+   "\tsourceBytes, err := os.ReadFile(source)\n\tif err != nil {\n"
+   "\t\t// \"If either file is unreadable, treated as differing with no detail\n"
+   "\t\t// (plain prompt).\"\n\t\treturn identical()\n\t}\n"
+   "\ttargetBytes, err := os.ReadFile(target)\n\tif err != nil {\n\t\treturn identical()\n\t}")],
+   "FAIL: TestAnUnreadableFileIsDifferingWithNoDetail"),
+   # rig: TestAnUnreadableDestinationIsDifferingWithNoDiff
+
+ # BOTH arms, in one edit. Changing only the source arm leaves the target arm
+ # answering correctly, and every fixture that puts the unreadable path on the
+ # destination side -- which is where compare_unix_test.go puts it, so the
+ # world snapshot can still walk home -- would report a kill for a defect only
+ # half present.
+ ("an unreadable subdirectory ends the walk", [repl(TD,
+   "\t\tif !d.walk(source, target, relative) {\n\t\t\td.changed = append(d.changed, relative)\n\t\t}",
+   "\t\td.walk(source, target, relative)")],
+   "FAIL: TestAnUnreadableDirectoryInsideATreeIsAChangedEntryRatherThanTheEndOfTheWalk"),
+   # rig: TestAnUnreadableDirectoryInsideATreeIsAChangedEntryAndNotTheEndOfTheWalk
+
+ # internal/plist, reached from the rig only through the plist arm of Compare.
  #
- # Waiting on a conformance case for the TREE DETAIL. The existing directory
- # cases have no equal-size pair and no fixture in which the sort is
- # load-bearing, so both of these survive the rig today.
+ # The first four are the leverage the dpz.2 banner promised and it delivered:
+ # internal/plist/testdata holds ONE document in two spellings carrying a date,
+ # a negative eight-byte integer, an emoji and fifteen keys, so a single
+ # conformance case borrowing that pair kills all four. Each is a defect that
+ # keeps the reader compiling and answering for every ordinary value, and loses
+ # exactly one type -- which is why one fixture that holds every type at once is
+ # worth more here than four cases each holding one.
+ ("the date epoch is Unix", [repl(PB,
+   "time.Date(2001, time.January, 1, 0, 0, 0, 0, time.UTC)",
+   "time.Date(1970, time.January, 1, 0, 0, 0, 0, time.UTC)")],
+   "FAIL: TestEveryPropertyListTypeIsReadBackFromBothSpellings"),
+   # rig: TestTheTwoSpellingsOfOneDocumentAgreeOnEveryTypeItHolds
+
+ # The sign bit cleared rather than the conversion removed. beUint returns a
+ # uint64 and the mask is applied there, before the one conversion: written as
+ # an int64 mask it would need the constant -1<<63 to name the same bit, which
+ # is the spelling a reader mistakes for a typo.
+ ("an eight-byte integer is read unsigned", [repl(PB,
+   "\treturn int64(beUint(r.data[offset+1 : offset+1+width])), nil",
+   "\tvalue := beUint(r.data[offset+1 : offset+1+width])\n"
+   "\tif width == 8 {\n\t\tvalue &^= 1 << 63\n\t}\n\treturn int64(value), nil")],
+   "FAIL: TestEveryPropertyListTypeIsReadBackFromBothSpellings"),
+   # rig: TestTheTwoSpellingsOfOneDocumentAgreeOnEveryTypeItHolds
+
+ # Widening each code unit to a rune is the tidy-up that looks like a
+ # simplification: it is correct for every character in the basic multilingual
+ # plane, so every ASCII fixture agrees, and it turns a surrogate pair into two
+ # replacement characters. The import goes with it -- utf16.Decode is the only
+ # use of that package in the file, and leaving it is a DOES-NOT-COMPILE.
+ ("UTF-16 units are widened, not decoded", [
+   repl(PB, "\treturn string(utf16.Decode(units)), nil",
+        "\twidened := make([]rune, len(units))\n"
+        "\t\tfor i, unit := range units {\n\t\t\twidened[i] = rune(unit)\n\t\t}\n"
+        "\t\treturn string(widened), nil"),
+   repl(PB, "\t\"unicode/utf16\"\n", "")],
+   "FAIL: TestEveryPropertyListTypeIsReadBackFromBothSpellings"),
+   # rig: TestTheTwoSpellingsOfOneDocumentAgreeOnEveryTypeItHolds
+
+ # `low > 0x0F` and NOT `if false`. The low nibble cannot exceed 0x0F, so the
+ # arm is dead either way -- but a literal false is a constant condition that
+ # go vet's unreachable analysis can reject, and the point of a mutation is to
+ # reach the gate.
+ ("the count escape is ignored", [repl(PB,
+   "\tif low == 0x0F {", "\tif low > 0x0F {")],
+   "FAIL: TestEveryPropertyListTypeIsReadBackFromBothSpellings"),
+   # rig: TestTheTwoSpellingsOfOneDocumentAgreeOnEveryTypeItHolds
+
+ # A UID or a set silently becomes a nil value instead of a refusal, so two
+ # files whose UIDs differ render identically and compare equal. At the
+ # boundary the signature is inverted and that is what makes it visible: a
+ # REFUSED file falls out of the plist arm into the byte comparison and prints
+ # "binary contents differ", so accepting one makes that line disappear.
+ ("an unmodelled marker is accepted", [repl(PB,
+   "\treturn nil, notAPlist(\"object #%d has marker 0x%02x, which this reader does not model\", ref, marker)",
+   "\treturn nil, nil")],
+   "FAIL: TestABinaryPropertyListHoldingAUIDIsRefusedRatherThanModelled"),
+   # rig: TestABinaryPropertyListHoldingAUIDIsNotComparedAsAPropertyList
+
+ # Rewritten, not deleted. Deleting the check leaves `start` declared and not
+ # used, which is a compile error rather than a mutation; `== ""` keeps the
+ # variable read and accepts every document element there is.
+ ("any XML document element is accepted", [repl(PX,
+   "\tif start.Name.Local != \"plist\" {", "\tif start.Name.Local == \"\" {")],
+   "FAIL: TestFilesThatAreNotPropertyListsAreRefused"),
+   # rig: TestAnXMLDocumentWhoseRootIsNotPlistIsNotAPropertyList
+
+ # The <string> arm given the treatment its four neighbours get, which is the
+ # shape of this defect: <integer>, <real> and <date> all trim, so trimming
+ # here reads as consistency. It is not -- whitespace inside a string is part
+ # of the value, and a config whose value is an indented block or a single
+ # space is silently rewritten by the reader that is meant to be reporting on
+ # it.
+ ("a string is trimmed like a number", [repl(PX,
+   "\t\treturn text, nil", "\t\treturn strings.TrimSpace(text), nil")],
+   "FAIL: TestWhitespaceInsideAStringIsKept"),
+   # rig: TestWhitespaceInsideAPropertyListStringIsKept
+
+ # CoreFoundation wraps base64 payloads across indented lines and
+ # encoding/base64 rejects the newlines rather than ignoring them, so this
+ # turns every wrapped <data> into a refusal. The import goes with it, as with
+ # the UTF-16 entry: strings.Map's predicate is the only use of `unicode` here.
+ ("base64 whitespace is not stripped", [
+   repl(PX, "\t\tencoded := strings.Map(func(r rune) rune {\n"
+        "\t\t\tif unicode.IsSpace(r) {\n\t\t\t\treturn -1\n\t\t\t}\n"
+        "\t\t\treturn r\n\t\t}, text)", "\t\tencoded := text"),
+   repl(PX, "\t\"unicode\"\n", "")],
+   "FAIL: TestBase64DataIsReadAcrossTheLinesCoreFoundationWrapsItOn"),
+   # rig: TestBase64DataIsReadAcrossTheLinesCoreFoundationWrapsItOn
+
+ # The rendering is what the plist arm diffs, so a real and the integer beside
+ # it printing the same string makes a settings change from 1 to 1.0 -- or the
+ # reverse -- invisible to the comparison.
+ ("a whole real prints as an integer", [repl(PF,
+   "\t\treturn text + \".0\"", "\t\treturn text")],
+   "FAIL: TestTheRenderingTellsEveryValueApart"),
+   # rig: TestAWholeRealIsNotTheIntegerBesideIt
+
+ # A property-list dictionary is unordered and the Go map this package parses
+ # into keeps no order, so without the sort the rendering is Go's randomised
+ # map order and two identical documents diff against each other differently on
+ # every run. This is the one entry here that needed NO new case: the EXISTING
+ # TestTwoSpellingsOfOnePropertyListAreComparedByContentNotBytes already kills
+ # it, which was only established by probing it rather than by reading the
+ # parked note that said otherwise. The import goes too -- format.go has no
+ # other user of sort.
+ ("dictionary keys are not sorted", [
+   repl(PF, "\t\tsort.Strings(keys)\n", ""),
+   repl(PF, "\t\"sort\"\n", "")],
+   "FAIL: TestDictionaryKeysAreRenderedInSortedOrder"),
+   # rig: TestTwoSpellingsOfOnePropertyListAreComparedByContentNotBytes
+
+ # STILL PARKED, and what remains is one shape rather than a list of unrelated
+ # gaps: the HOSTILE BINARY inputs. Nine mutations to internal/plist/binary.go
+ # whose defect is only visible on a file built to attack the reader -- an
+ # offset pointing outside the object table, a trailer whose offset table wraps,
+ # a structure nested past the depth guard, a container declaring more elements
+ # than it holds, a scalar referenced enough times to exhaust the budget.
  #
- #   a tree comparison stops at the file sizes    sameContents returns on equal sizes
- #       TestADirectoryComparisonIsRecursiveAndNotAShallowStat
- #   the three lists are not sorted               lines' sort.Strings removed
- #       TestADirectoryComparisonListsTheThreeGroupsAppspec06AsksFor
+ #   the offset bounds check is removed            offsetOf's range check deleted
+ #   the XML nesting guard is removed              element's depth >= maxDepth deleted
+ #   the binary nesting guard is removed           object's len(r.open) >= maxDepth deleted
+ #   the offset table start is unbounded           the fit check written as an addition
+ #   the reference charge is removed               references' spend deleted
+ #   the data charge is removed                    the 0x4 arm's spend deleted
+ #   the string charge is removed                  the 0x5 arm's spend deleted
+ #   the UTF-16 charge is removed                  the 0x6 arm's spend deleted
+ #   the charge multiplies instead of dividing     spend's budget/each -> units*each
  #
- # Waiting on a UNIX-tagged conformance case. Both are about a path the process
- # cannot read, which needs a mode-0000 fixture and so belongs beside the FIFO
- # case in harness_unix_test.go rather than in the portable suite.
- #
- #   an unreadable file is reported as agreement  compareFiles' differs() -> identical()
- #       TestAnUnreadableFileIsDifferingWithNoDetail
- #   an unreadable subdirectory ends the walk     walk's false result ignored
- #       TestAnUnreadableDirectoryInsideATreeIsAChangedEntryRatherThanTheEndOfTheWalk
- #
- # Waiting on conformance cases for internal/plist, which the rig reaches only
- # through the plist arm of Compare. The observable at the boundary is always
- # the same shape: a refused plist falls back to the byte comparison and prints
- # "binary contents differ", while a mutated reader crashes, hangs, or prints a
- # plist diff of a file that is not one. internal/plist/testdata's settings.plist
- # and settings.binary.plist are one document in both spellings and already hold
- # a date, a negative integer, a 2^32 integer, a surrogate pair, sixteen keys
- # and a <data>, so ONE case borrowing them the way config_test.go borrows
- # internal/storage/testdata unlocks the first four at once.
- #
- #   the date epoch is Unix's                     appleEpoch 2001 -> 1970
- #       TestEveryPropertyListTypeIsReadBackFromBothSpellings
- #   an eight-byte integer is read unsigned       integer's sign bit masked off
- #       TestEveryPropertyListTypeIsReadBackFromBothSpellings
- #   UTF-16 units are widened, not decoded        utf16.Decode -> rune(unit) per unit
- #       TestTheXMLAndBinarySpellingsOfOneDocumentRenderIdentically
- #   the count escape is ignored                  sized's 0x0F arm disabled
- #       TestEveryPropertyListTypeIsReadBackFromBothSpellings
- #   the offset bounds check is removed           offsetOf's range check deleted
- #       TestACorruptedBinaryPropertyListIsRefusedRatherThanCrashing
- #   an unmodelled marker is accepted             object's final refusal -> nil, nil
- #       TestABinaryPropertyListHoldingAUIDIsRefusedRatherThanModelled
- #   any XML document element is accepted         the <plist> check deleted
- #       TestFilesThatAreNotPropertyListsAreRefused
- #   a string is trimmed like a number            <string> passed through TrimSpace
- #       TestWhitespaceInsideAStringIsKept
- #   base64 whitespace is not stripped            the <data> strings.Map removed
- #       TestBase64DataIsReadAcrossTheLinesCoreFoundationWrapsItOn
- #   dictionary keys are not sorted               Format's sort.Strings removed
- #       TestDictionaryKeysAreRenderedInSortedOrder
- #   a whole real prints as an integer            real's ".0" suffix dropped
- #       TestTheRenderingTellsEveryValueApart
- #   the XML nesting guard is removed             element's depth >= maxDepth deleted
- #       TestADeeplyNestedPropertyListIsRefusedRatherThanCrashing
- #   the binary nesting guard is removed          object's len(r.open) >= maxDepth deleted
- #       TestADeeplyNestedPropertyListIsRefusedRatherThanCrashing
- #   the offset table start is unbounded          the fit check written as an addition
- #       TestATrailerThatWrapsTheOffsetTableIsRefusedRatherThanCrashing
- #   the reference charge is removed              references' spend deleted
- #       TestContainersThatDeclareMoreThanTheyHoldAreRefusedBeforeTheyAllocate
- #   the data charge is removed                   the 0x4 arm's spend deleted
- #       TestAScalarReferencedManyTimesIsRefusedRatherThanCopiedEachTime
- #   the string charge is removed                 the 0x5 arm's spend deleted
- #       TestAScalarReferencedManyTimesIsRefusedRatherThanCopiedEachTime
- #   the UTF-16 charge is removed                 the 0x6 arm's spend deleted
- #       TestAScalarReferencedManyTimesIsRefusedRatherThanCopiedEachTime
- #   the charge multiplies instead of dividing    spend's budget/each -> units*each
- #       TestAChargeTooLargeToPayIsRefusedRatherThanWrapped
+ # They are OUT OF SCOPE on this ticket rather than forgotten, and the reason is
+ # a real obstacle rather than time. internal/plist/plist_test.go builds these
+ # fixtures in-package from the layout constants -- trailerSize, offsetSizeAt,
+ # refSizeAt, objectCountAt, offsetTableAt -- and a black-box suite cannot
+ # import them. Doing it honestly means checking a testdata FILE into
+ # test/conformance/testdata per hostile shape. The boundary observable is the
+ # same for all nine and is already established by the four refusal entries
+ # above: a refused plist prints "binary contents differ", while a reader
+ # missing its guard crashes, hangs, or prints a plist diff of a file that is
+ # not one.
  #
  # One plist entry has no killing CASE and is listed with what it has, because
  # the alternative is to leave it out and let the next reader think it was
