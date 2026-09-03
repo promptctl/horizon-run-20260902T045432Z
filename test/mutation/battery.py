@@ -1035,8 +1035,9 @@ MUTATIONS = [
  # would have been killed by that package's own unit tests and reported
  # RIG-BLIND by the `make conformance` step, which was the accurate verdict.
  # macklebox-copy-sync-dpz.3 wires backup and restore to Copy, Delete and
- # AlreadyLinked, and the nine entries below are exactly the ones the rig can
- # now watch.
+ # AlreadyLinked, and the seven entries below are exactly the ones the rig
+ # can now watch. TWO of that banner's nine were written, injected and found
+ # RIG-BLIND, and they are parked below with what makes them so.
  #
  # They were transcribed from that banner's prose and RE-ANCHORED against the
  # current source rather than pasted: the banner recorded each mutation as a
@@ -1061,16 +1062,6 @@ MUTATIONS = [
    "\tparentMode = 0o777", "\tparentMode = 0o700")],
    "FAIL: TestCopyCreatesMissingParentsWithoutClampingThem"),
    # rig: TestTheDirectoriesCreatedOnTheWayToADestinationAreNotClamped
-
- ("copy does not clamp the destination", [repl(SY,
-   "\treturn Clamp(dst)", "\treturn nil")],
-   "FAIL: TestACopiedFileLandsMode0600"),
-   # rig: TestBackupCopiesHomeFilesIntoTheMackupFolderAndLeavesHomeAlone
-
- ("the clamp does not recurse", [repl(SY,
-   "\t\treturn clampTree(path)", "\t\treturn nil")],
-   "FAIL: TestACopiedDirectoryTreeIsClamped0700And0600Recursively"),
-   # rig: TestACopiedTreeIsClampedTo0700DirectoriesAnd0600FilesRecursively
 
  # The whole IsDir/else block is the anchor, down to the closing "})", because
  # os.Chmod(path, fileMode) occurs twice in this file -- once in Clamp's own
@@ -1125,7 +1116,7 @@ MUTATIONS = [
    # rig: TestTheLinkSkipHoldsWhenTheStorageRootIsReachedThroughASymlink
 
  # STILL PARKED, and the reasons are structural rather than a missing fixture.
- # Twelve of the old banner's twenty-two mutations cannot honestly be entries
+ # Fourteen of the old banner's twenty-two mutations cannot honestly be entries
  # today, and each would report RIG-BLIND if written -- which is a battery
  # failure dressed as a finding. Written down so the next reader does not
  # rediscover them one `make conformance` at a time.
@@ -1152,6 +1143,49 @@ MUTATIONS = [
  #   its Lstat failed or Delete has just run -- so the RemoveAll is a no-op on
  #   every path the rig can drive. This is the same fact copyTree's own merge
  #   comment records, from the other side.
+
+ #   "copy does not clamp the destination" (Copy's `return Clamp(dst)` ->
+ #   `return nil`) and "the clamp does not recurse" (Clamp's directory arm ->
+ #   `return nil`). Both were entries on this ticket, both reported
+ #   WRONG-DIAGNOSTIC, and probing them by hand found the rig does not kill
+ #   either. THE REASON IS THE SENTENCE DIRECTLY ABOVE, from a third side, so
+ #   read it before writing a fixture: dst is ALWAYS ABSENT when Copy runs.
+ #   copyFile creates with O_CREATE|fileMode and copyTree with MkdirAll(dst,
+ #   dirMode), so a freshly copied tree ALREADY LANDS at 0600/0700 and the
+ #   clamp only re-applies what the create modes gave. There is nothing for a
+ #   conformance case to see because there is no observable difference to see.
+ #
+ #   Do NOT try to unpark these with a "backup over an existing loose-moded
+ #   destination" case. That fixture was designed on this ticket before the
+ #   above was worked out, and it proves nothing: the executor deletes the
+ #   destination before copying, so the loose mode is gone by the time Copy is
+ #   reached. (The umask angle does work in principle -- under umask 0200 the
+ #   create gives 0400 and only the clamp gets to 0600 -- but a test process's
+ #   umask is process-global across the whole suite, which is a large hazard to
+ #   accept for two entries.) What DOES unpark them is
+ #   macklebox-link-engine-83q.x: Link clamps a target that may already exist,
+ #   so the clamp stops being a re-application of the create mode.
+ #
+ #   Their UNIT killers are recorded here because the entries above named the
+ #   wrong ones and the next reader should not pay a battery round to
+ #   rediscover that. "copy does not clamp the destination" is killed by
+ #   TestAnExistingDestinationFileIsClampedTooNotJustANewOne and
+ #   TestCopyAndLinkInheritTheAttributeStripThroughTheClamp -- NOT by
+ #   TestACopiedFileLandsMode0600, which copies to a fresh destination where
+ #   0600 comes from the create. "the clamp does not recurse" is killed by
+ #   TestLinkClampsItsTargetBeforeCreatingTheLink,
+ #   TestClampSkipsABrokenSymlinkInsteadOfFailing and
+ #   TestClampDoesNotDescendThroughASymlinkedDirectory -- NOT by
+ #   TestACopiedDirectoryTreeIsClamped0700And0600Recursively, which passes for
+ #   the same create-mode reason. Every one of those observed, not predicted.
+ #
+ #   DO NOT PARK "the clamp gives regular files the directory mode" BY
+ #   ASSOCIATION. It sits two entries up and it IS killed, with rig
+ #   confirmation, and the create-mode argument does not cover it: clampTree
+ #   chmodding a file to 0700 is MORE permissive than the 0600 the create gave,
+ #   so it is the one clamp mutation that changes an observable mode. The same
+ #   goes for "the parents of a destination are clamped too", which is about
+ #   ancestors the create does not touch.
  #
  #   All four attribute entries: the two deferral orders, the loop removal and
  #   the platform table swap. cleanAttributes shells out to /bin/chmod -N and
