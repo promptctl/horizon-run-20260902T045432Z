@@ -33,9 +33,16 @@ directory check that `appspec/04` deliberately defers to it.
 application keys and the supported-count trailer, `mackup show vim` prints a
 display name and a sorted, home-relative file set, and both fail exactly as
 `backup` does when the config is broken or the storage folder is not there —
-which is the point of putting them behind the same gates. The sync operations
-are not written yet: the five commands that copy or link files still report
-themselves as unimplemented.
+which is the point of putting them behind the same gates.
+
+Three of the five sync commands are written. `backup` and `restore` are one
+copy operation parameterized by a direction record, with drift detection, the
+diff shown before a replace prompt, and the partial-failure contract that keeps
+a run that could not copy everything from exiting 0. `link install` is the
+first of the link strategy: it moves each home file into the Mackup folder and
+leaves a symlink in its place, which is the transition that inverts where the
+source of truth lives. `link` and `link uninstall` still report themselves as
+unimplemented.
 
 ## Implementation
 

@@ -53,6 +53,11 @@ FILES = ["test/conformance/harness_test.go", "test/conformance/argv_test.go",
          "internal/homepath/homepath.go",
          "internal/app/enumerate.go", "internal/app/stages.go",
          "internal/app/sync.go", "internal/app/folder.go",
+         # appspec/01 section 1's "one uniform per-file executor", split out of
+         # sync.go when link install landed, and link install itself. The
+         # per-application verbose header's entry moved with the code; the
+         # link entries are new.
+         "internal/app/executor.go", "internal/app/link.go",
          # The catalog is DATA, and these two are the first non-.go entries in
          # this list. A mutation to a definition file is only worth writing now
          # that `list` and `show` print what it holds -- see the appspec/05
@@ -115,6 +120,8 @@ EN = "internal/app/enumerate.go"
 SG = "internal/app/stages.go"
 SN = "internal/app/sync.go"
 FD = "internal/app/folder.go"
+EX = "internal/app/executor.go"
+LK = "internal/app/link.go"
 CT = "internal/catalog/catalog.go"
 MK = "internal/catalog/applications/mackup.cfg"
 SY = "internal/syncfs/syncfs.go"
@@ -1154,15 +1161,26 @@ MUTATIONS = [
    # rig: TestTheLinkSkipHoldsWhenTheStorageRootIsReachedThroughASymlink
 
  # STILL PARKED, and the reasons are structural rather than a missing fixture.
- # Fourteen of the old banner's twenty-two mutations cannot honestly be entries
+ # Eleven of the old banner's twenty-two mutations cannot honestly be entries
  # today, and each would report RIG-BLIND if written -- which is a battery
  # failure dressed as a finding. Written down so the next reader does not
  # rediscover them one `make conformance` at a time.
  #
- #   Link's two entries -- the Clamp/Symlink order swapped, and a relative
- #   target -- and both StateOf entries. NOTHING CALLS Link OR StateOf. The
- #   three link arms of dispatch still report "not implemented"; they are
- #   macklebox-link-engine-83q.2's, and these four go with it.
+ #   Link's Clamp/Symlink order, swapped -- and this is now the ONLY survivor
+ #   of the four that were parked here on the grounds that "nothing calls Link
+ #   or StateOf". macklebox-link-sync-83q.2 gave both a caller: `link install`
+ #   copies, deletes, symlinks and prints a trace keyed on the LinkState, so
+ #   the relative-target entry and both StateOf entries are entries at the foot
+ #   of this file now.
+ #
+ #   This one is not, because it was probed under that caller and reported
+ #   RIG-BLIND. The target Link clamps is the storage copy syncfs.Copy wrote
+ #   moments earlier, and Copy clamps what it writes -- so re-clamping it
+ #   before or after the symlink changes nothing anyone can observe. That is
+ #   the create-mode argument the two clamp entries further down turn on,
+ #   arriving from a third side, and it unparks on the same ticket they do:
+ #   macklebox-link-sync-83q.3's `link`, which clamps a storage file it did not
+ #   just write.
  #
  #   "delete of an absent path is an error" (Delete's IsNotExist arm removed).
  #   The executor only reaches Delete after a successful Lstat of the
@@ -1201,8 +1219,11 @@ MUTATIONS = [
  #   create gives 0400 and only the clamp gets to 0600 -- but a test process's
  #   umask is process-global across the whole suite, which is a large hazard to
  #   accept for two entries.) What DOES unpark them is
- #   macklebox-link-engine-83q.x: Link clamps a target that may already exist,
- #   so the clamp stops being a re-application of the create mode.
+ #   macklebox-link-sync-83q.3's `link`: it symlinks a file ALREADY in storage,
+ #   so Link clamps a target no copy of this run created and the clamp stops
+ #   being a re-application of the create mode. NOT macklebox-link-sync-83q.2 --
+ #   `link install` copies the target into place first, and probing these two
+ #   under it changed nothing.
  #
  #   Their UNIT killers are recorded here because the entries above named the
  #   wrong ones and the next reader should not pay a battery round to
@@ -1261,9 +1282,9 @@ MUTATIONS = [
  # home nearly every one of the ~614 catalog keys prints nothing, and a header
  # per key gave 623 stdout lines of which 614 were headers. This mutation is one
  # line and restores exactly that.
- ("the verbose header is printed eagerly", [repl(SN,
-   "func (r *syncRun) header(key string) {\n\tr.pendingHeader = key\n}",
-   "func (r *syncRun) header(key string) {\n\tr.pendingHeader = key\n\tr.flushHeader()\n}")],
+ ("the verbose header is printed eagerly", [repl(EX,
+   "func (e *executor) header(key string) {\n\te.pendingHeader = key\n}",
+   "func (e *executor) header(key string) {\n\te.pendingHeader = key\n\te.flushHeader()\n}")],
    "FAIL: TestTheVerboseHeaderIsPrintedOnlyForAnApplicationThatPrintsSomething"),
    # rig: TestTheVerboseHeaderIsPrintedOnlyForAnApplicationThatPrintsSomething
 
@@ -1924,6 +1945,299 @@ MUTATIONS = [
  #     changes the path -- four hundred random shapes in that regime and the
  #     two constructed ones all agree. The field exists so the question cannot
  #     arise, not because a case pins it; if one is ever written, promote this.
+
+ # --- appspec/06 `link install` (macklebox-link-sync-83q.2) -----------------
+ #
+ # The first command of Strategy B, and the first that REMOVES something from
+ # the user's home directory. That is what makes the shape of these entries
+ # different from the copy ones above: appspec/06's per-file sequence is copy,
+ # delete, symlink, and a program that gets two of the three right passes any
+ # case that asserts one of them -- so the entries here are mostly about the
+ # sequence rather than about a single operation.
+ #
+ # Every `expect` in this first block but one is a CONFORMANCE diagnostic, and
+ # the exception says so where it sits. That is not an oversight: internal/app/link_test.go holds
+ # three unit cases (the progress words, the unguarded failure shape, and
+ # linkableSource's answer) and nothing else about this command is reachable
+ # without a filesystem, so `make check` runs the unit packages green and stops
+ # at the conformance stage. Every one of these was probed, not predicted --
+ # in a scratch tree, with `make check` and `make conformance` run separately.
+ #
+ # A WARNING FOR THE NEXT PROBE RUN, paid for once here. The scratch tree used
+ # for that probing was left MUTATED by an earlier run that was killed before
+ # its restore, and every result taken afterwards was wrong in the same
+ # direction: TestVerboseSaysWhichStateLinkInstallDidNothingOn appeared in the
+ # killer list of all thirteen candidates, because the stale mutation was
+ # killing it, not the candidate. Assert the tree is clean BEFORE each apply,
+ # not just after -- a mutation harness that only restores in a finally has no
+ # defence against SIGKILL.
+
+ # appspec/06's "Net effect": "the home path is now a symlink to the mackup
+ # path". Dropping the delete and the symlink leaves the copy, which is
+ # BACKUP -- the other entry door of appspec/00, and the one thing that
+ # section warns against collapsing this command into. Every net-effect case
+ # in link_test.go asserts all three parts for exactly this reason.
+ ("link install copies instead of moving", [repl(LK,
+   '\tif err := syncfs.Delete(homePath); err != nil {\n'
+   '\t\treturn linkFailure(err, "remove %s", homePath)\n'
+   '\t}\n'
+   '\tif err := syncfs.Link(mackupPath, homePath); err != nil {\n'
+   '\t\treturn linkFailure(err, "link %s to %s", homePath, mackupPath)\n'
+   '\t}\n'
+   '\treturn nil',
+   '\treturn nil')],
+   "FAIL: TestLinkInstallMovesTheHomeFileIntoStorageAndSymlinksItBack"),
+   # rig: TestLinkInstallMovesTheHomeFileIntoStorageAndSymlinksItBack
+
+ # The order appspec/01 section 2 fixes, reversed. It is invisible on every run
+ # that succeeds -- same three operations, same end state -- and loses the
+ # user's file on the one run where the copy fails. That is the whole hazard
+ # class appspec/07's "Interruption / crash residue" is about, and it is why
+ # the case this names arranges a copy that FAILS rather than one that works.
+ ("the home file is deleted before the copy has landed", [repl(LK,
+   '\tif err := syncfs.Copy(homePath, mackupPath); err != nil {\n'
+   '\t\treturn linkFailure(err, "copy %s to %s", homePath, mackupPath)\n'
+   '\t}\n'
+   '\tif err := syncfs.Delete(homePath); err != nil {\n'
+   '\t\treturn linkFailure(err, "remove %s", homePath)\n'
+   '\t}',
+   '\tif err := syncfs.Delete(homePath); err != nil {\n'
+   '\t\treturn linkFailure(err, "remove %s", homePath)\n'
+   '\t}\n'
+   '\tif err := syncfs.Copy(homePath, mackupPath); err != nil {\n'
+   '\t\treturn linkFailure(err, "copy %s to %s", homePath, mackupPath)\n'
+   '\t}')],
+   "FAIL: TestLinkInstallLeavesTheHomeFileWhereItIsUntilTheCopyHasLanded"),
+   # rig: TestLinkInstallLeavesTheHomeFileWhereItIsUntilTheCopyHasLanded
+
+ # appspec/00 promise 3's fixed point in its link-mode form. Without the
+ # predicate a second run walks a home path that is ALREADY a symlink into
+ # storage, copies it back over the file it points at, deletes it and relinks
+ # -- so the command is no longer idempotent, and appspec/01 section 2's
+ # third call site of the one predicate is gone.
+ ("the already-linked guard is dropped", [repl(LK,
+   "\tif syncfs.AlreadyLinked(homePath, mackupPath) || !linkableSource(homePath) {",
+   "\tif !linkableSource(homePath) {")],
+   "FAIL: TestASecondLinkInstallSkipsEveryFileAndChangesNothing"),
+   # rig: TestASecondLinkInstallSkipsEveryFileAndChangesNothing,
+   #      TestVerboseSaysWhichStateLinkInstallDidNothingOn
+
+ # appspec/01 section 2's "a reimplementer who codes this check four times
+ # risks four subtly different answers", made concrete: a plain symlink test
+ # answers "is this a link" where the predicate answers "is this a link TO ITS
+ # MACKUP COPY". They agree on every ordinary fixture, and the one that tells
+ # them apart is a home symlink pointing somewhere else -- which this command
+ # is supposed to move into storage, not skip.
+ ("link install codes its own symlink test", [repl(LK,
+   "\tif syncfs.AlreadyLinked(homePath, mackupPath) || !linkableSource(homePath) {",
+   "\tif info, err := os.Lstat(homePath); err == nil && info.Mode()&os.ModeSymlink != 0 || !linkableSource(homePath) {")],
+   "FAIL: TestLinkInstallActsOnAHomeSymlinkThatPointsSomewhereElse"),
+   # rig: TestLinkInstallActsOnAHomeSymlinkThatPointsSomewhereElse
+
+ # appspec/06 step 3's confirmation, and appspec/00 promise 4's safety gate
+ # with it. Skipping the prompt does not merely lose a question: the yes-arm's
+ # delete goes with it, so the existing storage copy is overwritten unasked and
+ # the home file is then removed.
+ ("the replace-in-backup prompt is skipped", [repl(LK,
+   "\tif err == nil {", "\tif false {\n\t\t_ = existing")],
+   "FAIL: TestLinkInstallPromptsBeforeReplacingAnExistingBackupAndNamesIt"),
+   # rig: TestDecliningTheLinkInstallPromptLeavesBothSidesAloneAndExitsZero,
+   #      TestEndOfInputAtTheLinkInstallPromptEndsTheRunUnguarded,
+   #      TestLinkInstallPromptsBeforeReplacingAnExistingBackupAndNamesIt,
+   #      TestTheForceFlagsAnswerTheLinkInstallPromptWithoutShowingIt
+
+ # The round-4 conflation on the last side of the program that has this
+ # question to ask, and the sharpest consequence it has anywhere: reading a
+ # stat error as "nothing is there" sends the file to step 4, which copies over
+ # the path it could not inspect and THEN DELETES THE HOME FILE.
+ #
+ # This entry SURVIVED both suites when it was first probed, and the case it
+ # now names was written to close that. Read
+ # TestAMackupPathThatCannotBeInspectedStopsBeforeTheCopyRatherThanInsideIt
+ # before touching either: the obvious case, the one this ticket already had --
+ # TestAFailureInsideLinkInstallStopsTheRunMidWay -- arranges the identical
+ # ENOTDIR fixture and CANNOT see this, because a run that reaches syncfs.Copy
+ # fails at the same ENOTDIR one call later with the same exit and the same
+ # path in the diagnostic. What tells the two apart is which paths stderr
+ # names: the guard has looked only at storage and names storage alone.
+ #
+ # Two repls, for the reason the sync.go entry above gives -- deleting the
+ # guard strands "errors" and "io/fs", and link.go has no second user of
+ # either. That is a fact about link.go on the day this runs, not a rule: the
+ # moment anything else in the file uses them, this entry starts reporting
+ # DOES-NOT-COMPILE and verifies nothing. --anchors cannot see it.
+ ("an uninspectable mackup path is read as an absent one", [
+   repl(LK, '\t"errors"\n\t"fmt"\n\t"io/fs"\n\t"os"\n', '\t"fmt"\n\t"os"\n'),
+   repl(LK, '\tif err != nil && !errors.Is(err, fs.ErrNotExist) {\n\t\treturn linkFailure(err, "inspect %s", mackupPath)\n\t}\n', "")],
+   "FAIL: TestAMackupPathThatCannotBeInspectedStopsBeforeTheCopyRatherThanInsideIt"),
+   # rig: TestAMackupPathThatCannotBeInspectedStopsBeforeTheCopyRatherThanInsideIt
+
+ # appspec/00 promise 5, "--dry-run mutates nothing", on the command that has
+ # the most to mutate. appspec/06 puts the stop AFTER the progress line for
+ # this command, so a dry run that printed nothing would fail the promise's
+ # other half and a dry run that printed and then acted fails this one.
+ ("link install's dry-run stop is dropped", [repl(LK,
+   "\tr.progress(linkInstallVerbs, relative, homePath, mackupPath)\n\tif r.dryRun {\n\t\treturn nil\n\t}",
+   "\tr.progress(linkInstallVerbs, relative, homePath, mackupPath)")],
+   "FAIL: TestLinkInstallDryRunStopsAtTheProgressLineAndMutatesNothing"),
+   # rig: TestLinkInstallDryRunStillRunsTheFolderCreationGate,
+   #      TestLinkInstallDryRunStopsAtTheProgressLineAndMutatesNothing
+
+ # appspec/01 section 4's lattice, one level off. link install WRITES into the
+ # Mackup folder, so appspec/06 lists it with backup against ENSURE -- the gate
+ # that offers to create the folder -- and not against the REQUIRE that restore
+ # runs. The mutation compiles, gates, and is wrong only on the run where the
+ # folder is not there yet, which is the first machine's first run: exactly the
+ # run this command exists for.
+ ("link install runs the require gate", [repl(LK,
+   "\tif err := ensureMackupFolder(run.confirm, run.folder); err != nil {",
+   "\tif err := requireMackupFolder(run.folder); err != nil {")],
+   "FAIL: TestLinkInstallCreatesTheMackupFolderOnYesAndRefusesWithoutIt"),
+   # rig: TestLinkInstallCreatesTheMackupFolderOnYesAndRefusesWithoutIt,
+   #      TestLinkInstallDryRunStillRunsTheFolderCreationGate
+
+ # appspec/06's "Environment gate per command" names this command explicitly:
+ # the application key is validated FIRST, so `link install frobnicate` reports
+ # the unsupported key without creating a folder or showing a prompt. Swapping
+ # the two still reports the key -- one line later, after the side effect the
+ # rule exists to prevent.
+ ("link install gates before validating the application name", [repl(LK,
+   "\tkeys, known := resolveScope(p)\n"
+   "\tif !known {\n\t\treturn ExitFailure\n\t}\n\n"
+   "\trun := &linkRun{executor: newExecutor(p)}\n"
+   "\tif err := ensureMackupFolder(run.confirm, run.folder); err != nil {\n"
+   "\t\treturn reportFatal(p.streams, err)\n\t}",
+   "\trun := &linkRun{executor: newExecutor(p)}\n"
+   "\tif err := ensureMackupFolder(run.confirm, run.folder); err != nil {\n"
+   "\t\treturn reportFatal(p.streams, err)\n\t}\n"
+   "\tkeys, known := resolveScope(p)\n"
+   "\tif !known {\n\t\treturn ExitFailure\n\t}")],
+   "FAIL: TestLinkInstallRefusesAnUnknownApplicationBeforeAnyFolderOrPrompt"),
+   # rig: TestLinkInstallRefusesAnUnknownApplicationBeforeAnyFolderOrPrompt
+
+ # A declined prompt is an ANSWER, not a failure -- appspec/00 promise 4 makes
+ # declining the default behaviour of the safety gate. Counting it as a failure
+ # is the one-line change that makes --force-no, which appspec/07 defines as
+ # "pre-answers with no" over every prompt, end the run at the first conflict
+ # instead of skipping every one of them.
+ ("a declined link install prompt ends the run", [repl(LK,
+   '\t\t\treturn nil\n\t\t}\n\t\tif err := syncfs.Delete(mackupPath); err != nil {',
+   '\t\t\treturn linkFailure(fs.ErrPermission, "replace %s", mackupPath)\n'
+   '\t\t}\n\t\tif err := syncfs.Delete(mackupPath); err != nil {')],
+   "FAIL: TestDecliningTheLinkInstallPromptLeavesBothSidesAloneAndExitsZero"),
+   # rig: TestDecliningTheLinkInstallPromptLeavesBothSidesAloneAndExitsZero,
+   #      TestTheForceFlagsAnswerTheLinkInstallPromptWithoutShowingIt
+
+ # appspec/06 step 1's trace is "keyed on the LinkState (already backed up /
+ # broken link / does not exist)", and this is the defect a case that only
+ # looked for "Doing nothing" would pass: one trace for every skip. It is also
+ # what makes StateOf's two entries below observable at the boundary at all --
+ # collapse this switch and the state model stops being printed anywhere.
+ ("one skip trace is printed for every state alike", [repl(LK,
+   "\tswitch syncfs.StateOf(homePath, mackupPath) {\n"
+   "\tcase syncfs.StateAlreadyLinked:\n\t\tr.trace(doingNothingLinked, homePath)\n"
+   "\tcase syncfs.StateBrokenLink:\n\t\tr.trace(doingNothingBroken, homePath)\n"
+   "\tdefault:\n\t\tr.trace(doingNothingAbsent, homePath)\n\t}",
+   "\t_ = mackupPath\n\tr.trace(doingNothingAbsent, homePath)")],
+   "FAIL: TestVerboseSaysWhichStateLinkInstallDidNothingOn"),
+   # rig: TestVerboseSaysWhichStateLinkInstallDidNothingOn
+
+ # The tidy-up appspec/06 forbids. This is the ONE command whose progress line
+ # uses two different words -- "Linking <f> ..." short and "Backing up\n  ..."
+ # verbose -- and a reader who takes the second for a copy-paste slip
+ # "corrects" it to match the first. appspec/06 writes both out.
+ #
+ # `expect` is the UNIT diagnostic here: internal/app/link_test.go asserts the
+ # pair directly, so make check stops before the conformance stage. The
+ # [rig: ...] note carries the conformance half, and the two are different
+ # cases rather than one seen twice.
+ ("link install's verbose progress uses its short word", [repl(LK,
+   'var linkInstallVerbs = progressVerbs{short: "Linking", long: "Backing up"}',
+   'var linkInstallVerbs = progressVerbs{short: "Linking", long: "Linking"}')],
+   "FAIL: TestLinkInstallsTwoProgressWordsAreTheOnesAppspec06Writes"),
+   # rig: TestLinkInstallsVerboseProgressUsesTheBackupWordAndAbsolutePaths
+
+ # THE ONE ENTRY HERE THAT MUTATES CORRECT CODE INTO THE "FIX". Every other
+ # stat-error entry in this file injects the conflation; this one injects the
+ # repair, because on THIS command the skip is the specified answer and the
+ # failure is the defect. linkableSource carries the argument in full and the
+ # commit that added it repeats it; the short form is that appspec/00 promise 9
+ # is titled "(copy mode)" and withholds the guarantee from link mode in as
+ # many words, appspec/07's table has no row for the condition under any link
+ # command, and appspec/01 section 5's licence is bounded by "without changing
+ # any successful-run behavior" -- which the reference's exit-0 run is.
+ #
+ # Expect a reader to arrive here believing this is the round-4..8 lesson being
+ # regressed. It is the opposite: the lesson was that a stat error is not an
+ # ANSWER, and the answer here is given by the specification rather than
+ # guessed from the stat.
+ #
+ # The case is behind `conformance && unix` -- only a permission arranges a
+ # home path that cannot be stat'ed -- and skips as the superuser, so a battery
+ # run as root reports this NOT KILLED. Correctly: the fixture denies nothing
+ # then. Two other entries in this file carry the same caveat.
+ ("an uninspectable home path fails the run", [repl(LK,
+   "\tif syncfs.AlreadyLinked(homePath, mackupPath) || !linkableSource(homePath) {\n"
+   "\t\tr.doingNothing(homePath, mackupPath)\n\t\treturn nil\n\t}",
+   "\tpresent, presentErr := sourcePresent(homePath)\n"
+   "\tif presentErr != nil {\n\t\treturn linkFailure(presentErr, \"inspect %s\", homePath)\n\t}\n"
+   "\tif syncfs.AlreadyLinked(homePath, mackupPath) || !present {\n"
+   "\t\tr.doingNothing(homePath, mackupPath)\n\t\treturn nil\n\t}")],
+   "FAIL: TestAHomePathThatCannotBeInspectedIsSkippedRatherThanFailingTheRun"),
+   # rig: TestAHomePathThatCannotBeInspectedIsSkippedRatherThanFailingTheRun
+
+ # --- appspec/06 the three syncfs entries that link install UNPARKS ---------
+ #
+ # The banner above parked four mutations on the grounds that "NOTHING CALLS
+ # Link OR StateOf". `link install` calls both, and three of the four kill.
+ # The fourth stays parked and its paragraph up there now says why on its own
+ # terms rather than by association.
+ #
+ # All three are killed at the UNIT stage -- internal/syncfs has direct tests
+ # for the primitive and the state model -- so `expect` is a unit diagnostic
+ # and the [rig: ...] note is what says the boundary can see them too. That
+ # note is the whole point of unparking them: they were already covered inside
+ # the package, and what was missing was a caller through which the rig could
+ # observe the same defect.
+
+ # A relative symlink target is what a reader reaches for on seeing an
+ # absolute path in a dotfile repository, and it is wrong here for a reason
+ # appspec/06 states from the other end: the link is created at the HOME path
+ # and must resolve into the Mackup FOLDER, which is a different directory. A
+ # basename target resolves next to the link instead -- in this command's case,
+ # to the link itself.
+ ("the link target is written relative", [repl(SY,
+   "\treturn os.Symlink(target, linkPath)",
+   "\treturn os.Symlink(filepath.Base(target), linkPath)")],
+   "FAIL: TestLinkPointsAtTheTargetItWasGivenAndCreatesMissingParents"),
+   # rig: TestLinkInstallMovesTheHomeFileIntoStorageAndSymlinksItBack, and ten
+   #      more -- a basename target breaks every link this command creates.
+
+ # appspec/01 section 2 says the predicate is asked FIRST, and this is what the
+ # order buys: without it, a live symlink to the mackup copy stats through to
+ # its target and reports StateRealFilePresent -- so `link install --verbose`
+ # tells the user a file it skipped as already-linked "does not exist".
+ ("StateOf does not ask the predicate first", [repl(SS,
+   "\tif AlreadyLinked(homePath, mackupPath) {\n\t\treturn StateAlreadyLinked\n\t}\n", "")],
+   "FAIL: TestEveryArrangementDerivesTheStateAppspec06NamesForIt"),
+   # rig: TestVerboseSaysWhichStateLinkInstallDidNothingOn
+
+ # appspec/06 names "broken link" as one of the three keys of step 1's trace,
+ # and appspec/07 gives the reference's wording for it -- "is a broken link,
+ # you might want to fix it." Without the dangling-target check every symlink
+ # that is not the mackup copy reads as a real file, and the one state the user
+ # is being asked to go and repair is never named.
+ #
+ # Two repls: dropping the arm leaves the Lstat's FileInfo unused, and a
+ # reimplementation without the arm would not have bound it. "io/fs" survives
+ # because AlreadyLinked is a second user of it -- which is exactly the
+ # condition "an uninspectable mackup path is read as an absent one", further
+ # up this section, warns is a fact about a file rather than a rule.
+ ("StateOf reads a broken link as a real file", [
+   repl(SS, "\thome, err := os.Lstat(homePath)", "\t_, err := os.Lstat(homePath)"),
+   repl(SS, "\tif home.Mode()&fs.ModeSymlink != 0 {\n\t\tif _, err := os.Stat(homePath); err != nil {\n\t\t\treturn StateBrokenLink\n\t\t}\n\t}\n", "")],
+   "FAIL: TestEveryArrangementDerivesTheStateAppspec06NamesForIt"),
+   # rig: TestVerboseSaysWhichStateLinkInstallDidNothingOn
 ]
 
 
