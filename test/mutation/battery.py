@@ -1380,11 +1380,14 @@ MUTATIONS = [
 
  # --- appspec/06 the diff SHAPE and the property-list reader (dpz.3) --------
  #
- # The last of dpz.2's three deferrals, paid the way the other two were. Every
- # entry below was parked with a note saying "waiting on a conformance case for
- # X"; test/conformance/compare_test.go, compare_unix_test.go and plist_test.go
- # are X, so the notes become entries and the notes are deleted rather than
- # left standing beside the thing they asked for.
+ # The last of dpz.2's three deferrals, paid the way the other two were. Twenty
+ # of the entries below were parked with a note saying "waiting on a conformance
+ # case for X"; test/conformance/compare_test.go, compare_unix_test.go and
+ # plist_test.go are X, so those notes become entries and the notes are deleted
+ # rather than left standing beside the thing they asked for. The twenty-first
+ # ("a tree entry is classified unfollowed") was in no banner at all and was
+ # found by injecting against the new cases, which is the argument for running
+ # the probe over a whole file rather than only over the list you inherited.
  #
  # Each was injected TWICE before it was written here, and both halves are
  # observed rather than predicted. The `expect` is the UNIT diagnostic, taken
@@ -1635,11 +1638,13 @@ MUTATIONS = [
    # rig: TestTwoSpellingsOfOnePropertyListAreComparedByContentNotBytes
 
  # STILL PARKED, and what remains is one shape rather than a list of unrelated
- # gaps: the HOSTILE BINARY inputs. Nine mutations to internal/plist/binary.go
- # whose defect is only visible on a file built to attack the reader -- an
- # offset pointing outside the object table, a trailer whose offset table wraps,
- # a structure nested past the depth guard, a container declaring more elements
- # than it holds, a scalar referenced enough times to exhaust the budget.
+ # gaps: the HOSTILE INPUTS. Nine mutations to the property-list reader -- eight
+ # in binary.go and one in xml.go, which is the XML depth guard and the only one
+ # of the nine a hand-written document can reach -- whose defect is visible only
+ # on a file built to attack it: an offset pointing outside the object table, a
+ # trailer whose offset table wraps, a structure nested past the depth guard, a
+ # container declaring more elements than it holds, a scalar referenced enough
+ # times to exhaust the budget.
  #
  #   the offset bounds check is removed            offsetOf's range check deleted
  #   the XML nesting guard is removed              element's depth >= maxDepth deleted
@@ -1657,8 +1662,9 @@ MUTATIONS = [
  # refSizeAt, objectCountAt, offsetTableAt -- and a black-box suite cannot
  # import them. Doing it honestly means checking a testdata FILE into
  # test/conformance/testdata per hostile shape. The boundary observable is the
- # same for all nine and is already established by the four refusal entries
- # above: a refused plist prints "binary contents differ", while a reader
+ # same for all nine and is already established by the TWO refusal entries above
+ # -- "an unmodelled marker is accepted" and "any XML document element is
+ # accepted": a refused plist prints "binary contents differ", while a reader
  # missing its guard crashes, hangs, or prints a plist diff of a file that is
  # not one.
  #
