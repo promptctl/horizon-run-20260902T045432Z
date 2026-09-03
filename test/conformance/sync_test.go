@@ -522,12 +522,20 @@ func TestTheLinkSkipHoldsWhenTheStorageRootIsReachedThroughASymlink(t *testing.T
 	symlink(t, real, world.Path("storage"))
 	world.WriteFile(".mackup/"+probeKey+".cfg", probeDefinition(".probrc"), 0o600)
 
-	// The home link points at the path THROUGH the symlinked root, which is
-	// not the path the program joins from the config.
+	// The home link points at the REAL path, which is not the path the program
+	// joins from the config -- the config names `storage`, so the program
+	// computes <home>/storage/Mackup/.probrc while the link reads
+	// <home>/volume/Mackup/.probrc. That difference is the whole fixture, and
+	// it was absent until now: the link used to be written through the
+	// symlinked root, which spells it EXACTLY as the program spells it, so a
+	// predicate comparing link text to the computed path passed this case
+	// while failing the property the case is named for. Injection is what
+	// found it -- the mutation replacing os.SameFile with a Readlink string
+	// comparison survived the whole conformance suite.
 	if err := os.WriteFile(filepath.Join(real, "Mackup", ".probrc"), []byte("real\n"), 0o600); err != nil {
 		t.Fatalf("writing the storage copy: %v", err)
 	}
-	symlink(t, world.Path("storage", "Mackup", ".probrc"), world.Path(".probrc"))
+	symlink(t, filepath.Join(real, "Mackup", ".probrc"), world.Path(".probrc"))
 
 	before := world.Snapshot()
 	result := world.Run("backup", probeKey).ExpectExit(0).ExpectSilentStderr()
