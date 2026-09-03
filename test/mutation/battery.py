@@ -1955,8 +1955,8 @@ MUTATIONS = [
  # case that asserts one of them -- so the entries here are mostly about the
  # sequence rather than about a single operation.
  #
- # Almost every `expect` below is a CONFORMANCE diagnostic, and the two that
- # are not say so. That is not an oversight: internal/app/link_test.go holds
+ # Every `expect` in this first block but one is a CONFORMANCE diagnostic, and
+ # the exception says so where it sits. That is not an oversight: internal/app/link_test.go holds
  # three unit cases (the progress words, the unguarded failure shape, and
  # linkableSource's answer) and nothing else about this command is reachable
  # without a filesystem, so `make check` runs the unit packages green and stops
@@ -2210,7 +2210,8 @@ MUTATIONS = [
    "\treturn os.Symlink(target, linkPath)",
    "\treturn os.Symlink(filepath.Base(target), linkPath)")],
    "FAIL: TestLinkPointsAtTheTargetItWasGivenAndCreatesMissingParents"),
-   # rig: TestLinkInstallMovesTheHomeFileIntoStorageAndSymlinksItBack
+   # rig: TestLinkInstallMovesTheHomeFileIntoStorageAndSymlinksItBack, and ten
+   #      more -- a basename target breaks every link this command creates.
 
  # appspec/01 section 2 says the predicate is asked FIRST, and this is what the
  # order buys: without it, a live symlink to the mackup copy stats through to
@@ -2230,7 +2231,8 @@ MUTATIONS = [
  # Two repls: dropping the arm leaves the Lstat's FileInfo unused, and a
  # reimplementation without the arm would not have bound it. "io/fs" survives
  # because AlreadyLinked is a second user of it -- which is exactly the
- # condition the entry above it warns is temporary.
+ # condition "an uninspectable mackup path is read as an absent one", further
+ # up this section, warns is a fact about a file rather than a rule.
  ("StateOf reads a broken link as a real file", [
    repl(SS, "\thome, err := os.Lstat(homePath)", "\t_, err := os.Lstat(homePath)"),
    repl(SS, "\tif home.Mode()&fs.ModeSymlink != 0 {\n\t\tif _, err := os.Stat(homePath); err != nil {\n\t\t\treturn StateBrokenLink\n\t\t}\n\t}\n", "")],
