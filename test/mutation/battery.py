@@ -59,7 +59,16 @@ FILES = ["test/conformance/harness_test.go", "test/conformance/argv_test.go",
          # two entries. gofmt is run over every touched file before the gate;
          # on a .cfg it fails to parse and writes nothing, which is the
          # behavior these rely on rather than tolerate.
-         "internal/catalog/catalog.go", "internal/catalog/applications/mackup.cfg"]
+         "internal/catalog/catalog.go", "internal/catalog/applications/mackup.cfg",
+         # appspec/06's sync primitives and drift detection, added with the
+         # entries below rather than with the packages: each of these four is
+         # edited by at least one mutation now that backup and restore call
+         # into them. internal/syncfs/attributes.go, internal/drift/diff.go and
+         # the four internal/plist files are deliberately still absent -- every
+         # mutation that would edit them is parked, and a file listed here that
+         # no mutation edits is copied and restored for nothing.
+         "internal/syncfs/syncfs.go", "internal/syncfs/state.go",
+         "internal/drift/drift.go", "internal/drift/tree.go"]
 
 H = "test/conformance/harness_test.go"
 C = "internal/ui/color.go"
@@ -87,6 +96,10 @@ EN = "internal/app/enumerate.go"
 SG = "internal/app/stages.go"
 CT = "internal/catalog/catalog.go"
 MK = "internal/catalog/applications/mackup.cfg"
+SY = "internal/syncfs/syncfs.go"
+SS = "internal/syncfs/state.go"
+DR = "internal/drift/drift.go"
+TD = "internal/drift/tree.go"
 
 # SURVIVES marks an entry that must NOT break the gate. Most entries are
 # defects the suite has to catch; these are the opposite -- correct code that a
@@ -467,8 +480,14 @@ MUTATIONS = [
    '"TestTheReaperJudgesTheEntryItRemovedOnce":')],
    "never calls NewWorld"),
 
+ # Re-anchored on macklebox-copy-sync-dpz.3: the scan no longer tests the
+ # identifier against the literal "NewWorld". It resolves the set of helpers
+ # that themselves build a world (newSyncWorld and friends) into worldBuilders
+ # and tests membership, so the mutation that makes the scan see a world
+ # everywhere is a predicate that is true of every identifier. The entry is
+ # unchanged in what it claims; only the line it points at moved.
  ("the no-world scan sees a world in every case", [repl(G,
-   'identifier.Name == "NewWorld"', 'identifier.Name != ""')],
+   "isIdentifier && builders[identifier.Name]", 'isIdentifier && identifier.Name != ""')],
    "no longer exists or now calls NewWorld"),
 
  # Both of these are killed only by the SECOND conformance run, the -trimpath
@@ -572,11 +591,22 @@ MUTATIONS = [
  # Scope call to `list` is written in the .4 section below, which is the
  # observable half of this property that .4 could honestly supply.
  #
- # Scope therefore still has no non-test caller: it belongs to the sync
- # fan-out, macklebox-copy-sync-dpz.3, which is the first command to act on
- # "all applications". Flipping the denylist rule today is still killed by
- # internal/config alone and still reports RIG-BLIND, accurately and
- # uselessly. Add it with that ticket.
+ # That left the property owed to whichever ticket gave Scope its first
+ # non-test caller, and macklebox-copy-sync-dpz.3 is it: internal/app/scope.go
+ # narrows the sync fan-out with cfg.Scope(apps.Keys()), so the rule is now
+ # observable as which files a `backup` with no named application writes. The
+ # entry below is that debt paid.
+ #
+ # The mutation is an ADDITION, like the appspec/03 trap further down, because
+ # the two checks in Scope both `continue` and exchanging them changes nothing:
+ # what makes the denylist lose is an allowlist entry excusing a key from it.
+ # That is precisely the reading appspec/03 forbids -- "an app appearing in
+ # BOTH lists is ignored" -- and it is the one a reimplementation reaches for,
+ # since an explicit allowlist entry looks like the more specific instruction.
+ ("an allowlist entry excuses a key from the denylist", [repl(CF,
+   "\t\tif c.ignore[key] {", "\t\tif c.ignore[key] && !c.allow[key] {")],
+   "FAIL: TestTheDenylistWinsOverTheAllowlist"),
+   # rig: TestTheDenylistWinsOverTheAllowlist
 
  # appspec/03's environment table, and the one rule in this tree that TWO
  # stages read from a single implementation: config discovery and database
@@ -947,19 +977,26 @@ MUTATIONS = [
  # prints as "the set of all keys assembled by the discovery rules" -- which is
  # what makes `list` an audit surface at all: a user narrowing their sync scope
  # still needs to see the catalog the narrowing is drawn from. Scope selects
- # what a SYNC command acts on, and has no caller until macklebox-copy-sync-dpz.3.
+ # what a SYNC command acts on, and internal/app/scope.go is now its one caller
+ # -- which is what makes the appspec/03 entry above writable, and makes this
+ # one sharper rather than weaker: both calls exist in the tree, and the defect
+ # is putting the second one here.
  #
  # Same shape as "the file_system engine gains an existence check" above: a
  # mutation that a green suite would welcome, kept honest by a case that says
  # the absence is the contract.
+ # Re-anchored on macklebox-copy-sync-dpz.3, and SHORTER than it was, which is
+ # the point worth recording. dispatch used to take four parameters and the
+ # config was not among them, so wiring Scope into `list` meant threading a
+ # *config.Config through app.go and dispatch.go as well -- four of the six
+ # edits below were that plumbing. dispatch now takes one pipeline value that
+ # already carries cfg, because the two sync arms need it, so the mutation is
+ # the three edits that are actually about `list`. A mutation that has to add
+ # a parameter to two functions is a mutation nobody would make by accident;
+ # this one is a four-line change that reads like a fix, which is the whole
+ # reason the entry exists.
  ("list is narrowed by the configured scope", [
-   repl(A, "\treturn dispatch(inv, streams, apps)", "\treturn dispatch(inv, streams, cfg, apps)"),
-   repl(D, '\t"github.com/promptctl/macklebox/internal/cli"\n',
-           '\t"github.com/promptctl/macklebox/internal/cli"\n'
-           '\t"github.com/promptctl/macklebox/internal/config"\n'),
-   repl(D, "func dispatch(inv cli.Invocation, streams *ui.IO, apps *appdb.Database) int {",
-           "func dispatch(inv cli.Invocation, streams *ui.IO, cfg *config.Config, apps *appdb.Database) int {"),
-   repl(D, "\t\treturn list(streams, apps)", "\t\treturn list(streams, cfg, apps)"),
+   repl(D, "\t\treturn list(streams, apps)", "\t\treturn list(streams, p.cfg, apps)"),
    repl(EN, '\t"github.com/promptctl/macklebox/internal/appdb"\n',
             '\t"github.com/promptctl/macklebox/internal/appdb"\n'
             '\t"github.com/promptctl/macklebox/internal/config"\n'),
@@ -991,72 +1028,140 @@ MUTATIONS = [
 
  # --- appspec/06 sync primitives (macklebox-copy-sync-dpz.1) ----------------
  #
- # DELIBERATELY EMPTY, and this banner is the entry that is owed. internal/syncfs
- # ships with copy, delete, link, the recursive 0600/0700 clamp, the attribute
- # cleanup, LinkState and the already-linked predicate -- and NOTHING CALLS IT
- # YET. dispatch's backup, restore and three link arms still report "not
- # implemented", so the conformance suite cannot observe a single one of those
- # primitives, and every entry written here today would be killed by
- # internal/syncfs's unit tests and then reported RIG-BLIND by the `make
- # conformance` step below -- which is the accurate verdict, not a false alarm.
- # Same call as the appspec/07 reset-safety deferral above, for the same reason.
+ # The banner that stood here was a deferral, and this is it being paid rather
+ # than restated. internal/syncfs shipped whole -- copy, delete, link, the
+ # recursive clamp, the attribute cleanup, LinkState and the already-linked
+ # predicate -- with NOTHING CALLING ANY OF IT, so every entry written then
+ # would have been killed by that package's own unit tests and reported
+ # RIG-BLIND by the `make conformance` step, which was the accurate verdict.
+ # macklebox-copy-sync-dpz.3 wires backup and restore to Copy, Delete and
+ # AlreadyLinked, and the nine entries below are exactly the ones the rig can
+ # now watch.
  #
- # The work is not skipped, only parked. Each mutation below was injected into a
- # copy of the tree and the killing case recorded, so the entries can be
- # transcribed rather than re-derived once macklebox-copy-sync-dpz.3 wires
- # backup and restore to these primitives and gives the rig something to watch.
- # Add internal/syncfs/{syncfs,state,attributes}.go to FILES at the same time --
- # they are absent from it on purpose, since a file in FILES that no mutation
- # edits is only backed up and restored for nothing.
+ # They were transcribed from that banner's prose and RE-ANCHORED against the
+ # current source rather than pasted: the banner recorded each mutation as a
+ # sentence, not as an anchor, and two of the case names it carried no longer
+ # exist under those spellings. The conformance case each entry leans on is
+ # named beside it, and is what the battery's [rig: ...] note has to report.
  #
- #   the parents of a destination are clamped too         parentMode 0o777 -> 0o700
- #       TestCopyCreatesMissingParentsWithoutClampingThem
- #   copy does not clamp the destination                  Copy's trailing Clamp(dst) -> nil
- #       TestAnExistingDestinationFileIsClampedTooNotJustANewOne
- #   the clamp does not recurse                           Clamp's clampTree(path) -> nil
- #       TestLinkClampsItsTargetBeforeCreatingTheLink
- #   the clamp gives regular files the directory mode     clampTree's fileMode -> dirMode
- #       TestACopiedDirectoryTreeIsClamped0700And0600Recursively
- #   the clamp fails on a broken symlink                  clampTree's ModeSymlink skip removed
- #       TestClampSkipsABrokenSymlinkInsteadOfFailing
- #   the clamp descends through symlinked directories     clampTree recurses on EvalSymlinks
- #       TestClampDoesNotDescendThroughASymlinkedDirectory
- #   link clamps after creating the link                  Link's Clamp/Symlink order swapped
- #       TestLinkClampsItsTargetBeforeCreatingTheLink
- #   the link records a relative target                   Link symlinks filepath.Rel(...)
- #       TestLinkPointsAtTheTargetItWasGivenAndCreatesMissingParents
- #   a directory copy clears the destination first        copyTree gains os.RemoveAll(dst)
- #       TestCopyMergesIntoAnExistingDestinationDirectory
- #   a directory copy does not recurse                    copyTree's IsDir arm -> nil
- #       TestACopiedDirectoryTreeIsClamped0700And0600Recursively
- #   a directory copy stops at a symlinked directory      copyTree's IsDir arm gains a
- #                                                        ModeSymlink guard
- #       TestCopyDescendsIntoASymlinkedDirectoryInsideTheSourceTree
- #   the copy classifies with Lstat                       Copy's os.Stat(src) -> os.Lstat(src)
- #       TestCopyFollowsASymlinkedSourceAndWritesARealFile
- #   delete of an absent path is an error                 Delete's IsNotExist arm removed
- #       TestDeletingAPathThatIsNotThereSucceeds
- #   delete strips attributes after removing the path     Delete's cleanAttributes deferred
- #       TestDeleteStripsAttributesWhileThePathIsStillThere
- #   clamp strips attributes after changing the mode      Clamp's cleanAttributes deferred
- #       TestClampStripsAttributesBeforeItChangesTheMode
- #   attributes are never stripped                        cleanAttributes' loop removed
- #       TestDeleteStripsAttributesWhileThePathIsStillThere
- #   the platform cleanup tables are swapped              darwin's and linux's argv exchanged
- #       TestTheCleanupCommandsAreTheOnesAppspec06NamesForEachPlatform
- #   the predicate accepts any live home symlink          AlreadyLinked's SameFile -> true
- #       TestTheAlreadyLinkedPredicateIsTrueOnlyForALiveLinkToTheMackupCopy
- #   the predicate compares link text instead of identity SameFile -> Readlink ==
- #       TestTheLinkedAnswerSurvivesAStorageRootReachedThroughASymlink
- #   StateOf never reports mackup-only                    StateOf's mackup stat removed
- #       TestEveryArrangementDerivesTheStateAppspec06NamesForIt
- #   StateOf calls a dangling link a real file            StateOf's broken-link arm removed
- #       TestADanglingHomeSymlinkReadsAsNotLinkedRatherThanRaising
+ # Each `expect` names a UNIT diagnostic, because `make check` runs the unit
+ # packages first and stops there -- the rule the appspec/07 banner above
+ # states, applied per entry. The conformance half of the claim is carried by
+ # the separate `make conformance` run, not by expect.
  #
- # Three mutations were injected and are NOT listed, because they survived and
- # deserve to: each is behaviour-preserving, so an entry for it would be a
- # standing false alarm rather than a hole. Recorded so the next reader does not
- # rediscover them and "fix" the tests to catch what is not there.
+ # internal/syncfs/attributes.go is still deliberately absent from FILES. All
+ # four attribute mutations stay parked below, so no entry edits that file, and
+ # a file in FILES that no mutation edits is backed up and restored for nothing.
+
+ # The clamp is a post-condition of the path that was COPIED, never of the
+ # ancestors created to reach it. Getting this backwards makes the first file
+ # copied into a fresh Mackup folder narrow the folder itself to 0700 -- a
+ # directory the program was never asked to manage, inside the user's Dropbox.
+ ("the parents of a destination are clamped too", [repl(SY,
+   "\tparentMode = 0o777", "\tparentMode = 0o700")],
+   "FAIL: TestCopyCreatesMissingParentsWithoutClampingThem"),
+   # rig: TestTheDirectoriesCreatedOnTheWayToADestinationAreNotClamped
+
+ ("copy does not clamp the destination", [repl(SY,
+   "\treturn Clamp(dst)", "\treturn nil")],
+   "FAIL: TestACopiedFileLandsMode0600"),
+   # rig: TestBackupCopiesHomeFilesIntoTheMackupFolderAndLeavesHomeAlone
+
+ ("the clamp does not recurse", [repl(SY,
+   "\t\treturn clampTree(path)", "\t\treturn nil")],
+   "FAIL: TestACopiedDirectoryTreeIsClamped0700And0600Recursively"),
+   # rig: TestACopiedTreeIsClampedTo0700DirectoriesAnd0600FilesRecursively
+
+ # The whole IsDir/else block is the anchor, down to the closing "})", because
+ # os.Chmod(path, fileMode) occurs twice in this file -- once in Clamp's own
+ # regular-file arm and once here. A repl naming just the line would resolve to
+ # neither, since apply() requires exactly one occurrence.
+ ("the clamp gives regular files the directory mode", [repl(SY,
+   "\t\tif info.IsDir() {\n\t\t\treturn os.Chmod(path, dirMode)\n\t\t}\n"
+   "\t\treturn os.Chmod(path, fileMode)\n\t})",
+   "\t\tif info.IsDir() {\n\t\t\treturn os.Chmod(path, dirMode)\n\t\t}\n"
+   "\t\treturn os.Chmod(path, dirMode)\n\t})")],
+   "FAIL: TestACopiedDirectoryTreeIsClamped0700And0600Recursively"),
+   # rig: TestACopiedTreeIsClampedTo0700DirectoriesAnd0600FilesRecursively
+
+ ("a directory copy does not recurse", [repl(SY,
+   "\t\t\terr = copyTree(from, to)", "\t\t\terr = nil")],
+   "FAIL: TestACopiedDirectoryTreeIsClamped0700And0600Recursively"),
+   # rig: TestACopiedTreeIsClampedTo0700DirectoriesAnd0600FilesRecursively
+
+ # The asymmetry between the two walks in this one file: copyTree classifies
+ # each entry with a FOLLOWING stat, so a directory symlink is descended into
+ # and written to storage as real content, while clampTree reads the entry's
+ # own type and stops. Adding the clamp's guard to the copy is the tidy-up a
+ # reader who noticed the difference reaches for.
+ ("a directory copy stops at a symlinked directory", [repl(SY,
+   "\t\tcase statErr == nil && info.IsDir():",
+   "\t\tcase statErr == nil && info.IsDir() && entry.Type()&fs.ModeSymlink == 0:")],
+   "FAIL: TestCopyDescendsIntoASymlinkedDirectoryInsideTheSourceTree"),
+   # rig: TestASymlinkedDirectoryInsideTheSourceTreeIsCopiedAsRealContent
+
+ ("the copy classifies with Lstat", [repl(SY,
+   "\tinfo, err := os.Stat(src)", "\tinfo, err := os.Lstat(src)")],
+   "FAIL: TestCopyFollowsASymlinkedSourceAndWritesARealFile"),
+   # rig: TestASymlinkedSourceIsCopiedAsTheRealFileItPointsAt
+
+ # appspec/01 section 2's one predicate, which four operations are promised to
+ # share. Both mutations below keep it compiling and answering true on the
+ # arrangement every ordinary fixture has; what they lose is the two conditions
+ # that only an unusual arrangement can see.
+ ("the predicate accepts any live home symlink", [repl(SS,
+   "\treturn os.SameFile(home, mackup)",
+   "\t_, _ = home, mackup\n\treturn true")],
+   "FAIL: TestTheAlreadyLinkedPredicateIsTrueOnlyForALiveLinkToTheMackupCopy"),
+   # rig: TestAHomeSymlinkPointingSomewhereElseIsBackedUpAsItsContents
+
+ ("the predicate compares link text instead of identity", [repl(SS,
+   "\treturn os.SameFile(home, mackup)",
+   "\t_, _ = home, mackup\n"
+   "\ttext, readErr := os.Readlink(homePath)\n"
+   "\tif readErr != nil {\n\t\treturn false\n\t}\n"
+   "\treturn text == mackupPath")],
+   "FAIL: TestTheLinkedAnswerSurvivesAStorageRootReachedThroughASymlink"),
+   # rig: TestTheLinkSkipHoldsWhenTheStorageRootIsReachedThroughASymlink
+
+ # STILL PARKED, and the reasons are structural rather than a missing fixture.
+ # Twelve of the old banner's twenty-two mutations cannot honestly be entries
+ # today, and each would report RIG-BLIND if written -- which is a battery
+ # failure dressed as a finding. Written down so the next reader does not
+ # rediscover them one `make conformance` at a time.
+ #
+ #   Link's two entries -- the Clamp/Symlink order swapped, and a relative
+ #   target -- and both StateOf entries. NOTHING CALLS Link OR StateOf. The
+ #   three link arms of dispatch still report "not implemented"; they are
+ #   macklebox-link-engine-83q.2's, and these four go with it.
+ #
+ #   "delete of an absent path is an error" (Delete's IsNotExist arm removed).
+ #   The executor only reaches Delete after a successful Lstat of the
+ #   destination, so the absent arm has no caller that can supply an absent
+ #   path. It is reachable in principle through appspec/07's interruption
+ #   residue and unreachable through the rig.
+ #
+ #   "the clamp fails on a broken symlink" and "the clamp descends through
+ #   symlinked directories". The tree the clamp walks was created by the copy
+ #   moments earlier, and the copy follows symlinks -- so that tree holds none
+ #   for the clamp to meet. Conformance cases for both were written on this
+ #   branch, watched to fail for that reason, and deleted. Do not re-add them.
+ #
+ #   "a directory copy clears the destination first" (copyTree gains an
+ #   os.RemoveAll). syncfs.Copy is only ever called with dst absent -- either
+ #   its Lstat failed or Delete has just run -- so the RemoveAll is a no-op on
+ #   every path the rig can drive. This is the same fact copyTree's own merge
+ #   comment records, from the other side.
+ #
+ #   All four attribute entries: the two deferral orders, the loop removal and
+ #   the platform table swap. cleanAttributes shells out to /bin/chmod -N and
+ #   its three siblings, none of which changes anything observable on an
+ #   ordinary fixture, so internal/syncfs owns them through the runCleanup seam
+ #   and its own unit tests. This is why attributes.go is not in FILES.
+ #
+ # Three mutations were injected and are NOT listed anywhere above, because
+ # they survived and deserve to. Each is behaviour-preserving, so an entry for
+ # it would be a standing false alarm rather than a hole.
  #
  #   * Dropping either existence check from AlreadyLinked. os.SameFile is false
  #     when handed the nil FileInfo a failed stat leaves, so both are implied by
@@ -1070,71 +1175,166 @@ MUTATIONS = [
 
  # --- appspec/06 drift detection and the diff detail (macklebox-copy-sync-dpz.2)
  #
- # DELIBERATELY EMPTY, on the same call as the banner above and for the same
- # reason. internal/drift and internal/plist ship the whole of appspec/06 "Drift
- # detection" -- every comparison class, the unified diff, the directory summary,
- # and the appspec/07 levels each detail line is printed at -- and NOTHING CALLS
- # THEM EITHER. dispatch's backup and restore are still
- # macklebox-copy-sync-dpz.3's, so the conformance rig cannot reach a single
- # comparison, and an entry written here today would be killed by the unit
- # packages and then reported RIG-BLIND by the `make conformance` step. That is
- # the accurate verdict, not a false alarm.
+ # The other deferral, paid the same way. internal/drift and internal/plist
+ # shipped with every comparison class, the unified diff, the directory summary
+ # and the appspec/07 level each detail line is printed at, and nothing called
+ # them either. dispatch's backup and restore now do, through the single
+ # drift.Compare in internal/app/sync.go, so the comparison classes and the
+ # directory summary are observable at the boundary and the twelve entries
+ # below are written.
  #
- # Each mutation below was injected into a COPY of the tree and its killing case
- # recorded, so dpz.3 transcribes rather than re-derives. Add
- # internal/drift/{drift,diff,tree}.go and
- # internal/plist/{plist,xml,binary,format}.go to FILES in the same commit --
- # they are absent from it on purpose, since a file in FILES that no mutation
- # edits is backed up and restored for nothing.
+ # What is NOT written yet is the diff SHAPE and the property-list reader. Both
+ # are reachable through Compare, but every case that could see them is a unit
+ # case: the conformance suite asserts that a diff appears and what its two
+ # sides are, and nothing at the boundary yet pins the context width, the hunk
+ # merge, the range spelling, the per-line levels, or a single plist type. Those
+ # entries would report RIG-BLIND, so they are parked below with the cases each
+ # one is waiting on rather than written and left red.
  #
- # The injection pass paid for itself twice on this branch, which is the argument
- # for running one before believing a suite rather than after. It found a defect
- # in the PROGRAM -- removing the byte comparison ahead of the three arms left
- # two identical text files reported as differing, because the text arm never
- # answered "identical" at all and the check above it was documented as an
- # optimisation -- and a hole in the CASES: the <plist> document-element check
- # had nothing that could see it, since every not-a-plist fixture was being
- # refused for some other reason.
+ # As above, each `expect` is a UNIT diagnostic and the [rig: ...] note the
+ # battery prints carries the conformance half.
  #
- # appspec/06 "Drift detection", the comparison classes
- #   drift classifies with a following stat       Compare's os.Lstat -> os.Stat
- #       TestEitherPathBeingASymlinkIsDifferingWithNoDetail
- #   the symlink arm reports agreement            that arm's differs() -> identical()
- #       TestEitherPathBeingASymlinkIsDifferingWithNoDetail
- #   the type mismatch is one message either way  "file vs folder" -> "folder vs file"
- #       TestATypeMismatchIsOneLineSayingWhichWayRound
- #   the plist arm is gone                        comparePlists call removed
- #       TestTwoSpellingsOfOnePropertyListAreComparedByContentNotBytes
- #   the text arm runs before the plist arm       the two arms exchanged
- #       TestAPropertyListIsComparedAsAStructureAndNotAsMarkup
- #   an unreadable file is reported as agreement  compareFiles' differs() -> identical()
- #       TestAnUnreadableFileIsDifferingWithNoDetail  (unix)
- #   the byte-equality fast path is removed       compareFiles' bytes.Equal arm deleted
- #       TestTwoIdenticalFilesAreTheIdempotencyFixedPoint
- #   plist identity is decided before rendering   equalLines -> a length comparison
- #       TestTwoPropertyListsThatDifferProduceADiffOfTheirStructures
- #   the no-newline marker is not emitted         markIncomplete returns unchanged
- #       TestTwoFilesDifferingOnlyInAFinalNewlineDifferAndSayHow
- #   the detail is printed on the error stream    Print's Say(line.Level) -> CopyFailure
- #       TestTheDriftDetailGoesToStdout
+ # internal/drift/diff.go and the four internal/plist files are therefore NOT in
+ # FILES yet: no entry here edits them, and a file in FILES that no mutation
+ # edits is backed up for nothing. They go in with their entries.
+
+ # appspec/06 "Drift detection", the comparison classes.
  #
- # appspec/06 "Drift detection", the recursive directory comparison
- #   a directory entry is classified unfollowed   compare's os.Stat -> os.Lstat
- #       TestASymlinkInsideATreeIsFollowedSoTheComparisonIsTheCopysFixedPoint
- #   a tree comparison stops at the file sizes    sameContents returns on equal sizes
- #       TestADirectoryComparisonIsRecursiveAndNotAShallowStat
- #   the three lists are not sorted               lines' sort.Strings removed
- #       TestADirectoryComparisonListsTheThreeGroupsAppspec06AsksFor
- #   the two only-side lists are swapped          onlySource and onlyTarget exchanged
- #       TestADirectoryComparisonListsTheThreeGroupsAppspec06AsksFor
- #   a one-sided directory is descended into      the !inTarget arm lists its entries
- #       TestADirectoryOnOneSideIsNamedOnceAndNotDescendedInto
- #   an unreadable subdirectory ends the walk     walk's false result ignored
- #       TestAnUnreadableDirectoryInsideATreeIsAChangedEntryRatherThanTheEndOfTheWalk (unix)
- #   an identical tree still reports detail       compareTrees' empty() check disabled
- #       TestTwoIdenticalTreesAreIdentical
+ # The first two are the same rule from both sides: "if either path is a
+ # symlink: treated as differing, with no diff detail". It is asked of the
+ # Lstat results, which is what makes it a question about the PATH -- and it is
+ # the easy mistake to make here precisely because internal/syncfs.Copy, one
+ # package over, deliberately does the opposite with a following stat.
+ ("drift classifies with a following stat", [repl(DR,
+   "\tsourceInfo, sourceErr := os.Lstat(source)\n\ttargetInfo, targetErr := os.Lstat(target)",
+   "\tsourceInfo, sourceErr := os.Stat(source)\n\ttargetInfo, targetErr := os.Stat(target)")],
+   "FAIL: TestEitherPathBeingASymlinkIsDifferingWithNoDetail"),
+   # rig: TestASymlinkAtTheDestinationGetsThePlainPromptWithNoDiff
+
+ ("the symlink arm reports agreement", [repl(DR,
+   "\tif isSymlink(sourceInfo) || isSymlink(targetInfo) {\n\t\treturn differs()\n\t}",
+   "\tif isSymlink(sourceInfo) || isSymlink(targetInfo) {\n\t\treturn identical()\n\t}")],
+   "FAIL: TestEitherPathBeingASymlinkIsDifferingWithNoDetail"),
+   # rig: TestASymlinkAtTheDestinationGetsThePlainPromptWithNoDiff
+
+ # The detail is written source-first, so backup and restore print opposite
+ # messages about the same pair of paths. One message for both cases tells half
+ # the program's users the wrong thing and passes any single-direction case.
+ ("the type mismatch is one message either way", [repl(DR,
+   'note("type mismatch: folder vs file")', 'note("type mismatch: file vs folder")')],
+   "FAIL: TestATypeMismatchIsOneLineSayingWhichWayRound"),
+   # rig: TestATypeMismatchIsOneLineSayingWhichWayRound
+
+ # appspec/06 puts the plist arm AHEAD of the text arm, and both halves of that
+ # ordering are defects with the same signature: a preference file's markup is
+ # diffed instead of its settings, so every plist macOS rewrites is reported as
+ # drift on every run. The first mutation deletes the arm; the second keeps it
+ # and moves it behind the text arm, which is what a reader tidying the
+ # cheapest test to the front would do.
+ ("the plist arm is gone", [repl(DR,
+   "\tif detail, isPlistPair := comparePlists(sourceBytes, targetBytes, source, target); isPlistPair {\n"
+   "\t\treturn detail\n\t}\n", "")],
+   "FAIL: TestTwoSpellingsOfOnePropertyListAreComparedByContentNotBytes"),
+   # rig: TestTwoSpellingsOfOnePropertyListAreComparedByContentNotBytes
+
+ ("the text arm runs before the plist arm", [repl(DR,
+   "\tif detail, isPlistPair := comparePlists(sourceBytes, targetBytes, source, target); isPlistPair {\n"
+   "\t\treturn detail\n\t}\n"
+   "\tif utf8.Valid(sourceBytes) && utf8.Valid(targetBytes) {\n"
+   "\t\treturn compareText(sourceBytes, targetBytes, source, target)\n\t}\n",
+   "\tif utf8.Valid(sourceBytes) && utf8.Valid(targetBytes) {\n"
+   "\t\treturn compareText(sourceBytes, targetBytes, source, target)\n\t}\n"
+   "\tif detail, isPlistPair := comparePlists(sourceBytes, targetBytes, source, target); isPlistPair {\n"
+   "\t\treturn detail\n\t}\n")],
+   "FAIL: TestAPropertyListIsComparedAsAStructureAndNotAsMarkup"),
+   # rig: TestAPropertyListDiffShowsTheStructureAndNotTheMarkup
+
+ # The byte comparison ahead of the three arms is load-bearing and not an
+ # optimisation, which the injection pass on dpz.2 established against a
+ # comment then claiming otherwise: the text arm has no identical answer of its
+ # own, so without this every unchanged file in every run is reported as
+ # differing and the idempotency promise of appspec/00 is gone. It is the one
+ # entry here that found a defect in the PROGRAM rather than a hole in the rig.
+ ("the byte-equality fast path is removed", [repl(DR,
+   "\tif bytes.Equal(sourceBytes, targetBytes) {\n\t\treturn identical()\n\t}\n\n", "")],
+   "FAIL: TestTwoIdenticalFilesAreTheIdempotencyFixedPoint"),
+   # rig: TestASecondIdenticalRunDoesNothingAndPromptsForNothing
+
+ # Identity for the plist arm is decided from the same rendering the diff is
+ # taken over, so the arm cannot report "differs" and then print an empty diff.
+ # A length comparison keeps every existing identical case green -- two
+ # renderings of different length still differ -- and calls two documents with
+ # the same shape and different values the same.
+ ("plist identity is decided before rendering", [repl(DR,
+   "func equalLines(a, b []string) bool {\n\tif len(a) != len(b) {\n\t\treturn false\n\t}\n"
+   "\tfor i := range a {\n\t\tif a[i] != b[i] {\n\t\t\treturn false\n\t\t}\n\t}\n\treturn true\n}",
+   "func equalLines(a, b []string) bool {\n\treturn len(a) == len(b)\n}")],
+   "FAIL: TestTwoPropertyListsThatDifferProduceADiffOfTheirStructures"),
+   # rig: TestAPropertyListDiffShowsTheStructureAndNotTheMarkup
+
+ # appspec/07's "Do not generalize warnings -> stderr" names this message
+ # specifically: the drift header and its diff body are STDOUT. A rig asserting
+ # only the text would pass a program that misrouted every line of it, which is
+ # why the conformance case asserts a silent stderr and this entry exists.
+ ("the detail is printed on the error stream", [repl(DR,
+   "\t\tstreams.Say(line.Level, line.Text)", "\t\tstreams.Say(ui.CopyFailure, line.Text)")],
+   "FAIL: TestTheDriftDetailGoesToStdout"),
+   # rig: TestTheDriftHeaderAndDiffAreOnStdoutAheadOfThePrompt
+
+ # appspec/06 "Drift detection", the recursive directory comparison.
  #
- # appspec/06 "a unified diff", and the appspec/07 levels it is decorated with
+ # "only in source" and "only in target" are the two lists a reimplementation
+ # is most likely to exchange, and exchanging them is silent: the same names
+ # appear, under labels that tell the user the copy is about to do the opposite
+ # of what it will do.
+ ("the two only-side lists are swapped", [repl(TD,
+   "\t\tcase !inTarget:\n\t\t\td.onlySource = append(d.onlySource, relative)\n"
+   "\t\tcase !inSource:\n\t\t\td.onlyTarget = append(d.onlyTarget, relative)",
+   "\t\tcase !inTarget:\n\t\t\td.onlyTarget = append(d.onlyTarget, relative)\n"
+   "\t\tcase !inSource:\n\t\t\td.onlySource = append(d.onlySource, relative)")],
+   "FAIL: TestADirectoryComparisonListsTheThreeGroupsAppspec06AsksFor"),
+   # rig: TestADirectoryComparisonIsRecursiveAndNamesTheThreeGroups
+
+ ("a one-sided directory is descended into", [repl(TD,
+   "\t\tcase !inTarget:\n\t\t\td.onlySource = append(d.onlySource, relative)\n",
+   "\t\tcase !inTarget:\n\t\t\td.onlySource = append(d.onlySource, relative)\n"
+   "\t\t\tif children, childErr := entriesOf(filepath.Join(source, name)); childErr == nil {\n"
+   "\t\t\t\tfor child := range children {\n"
+   "\t\t\t\t\td.onlySource = append(d.onlySource, path.Join(relative, child))\n"
+   "\t\t\t\t}\n\t\t\t}\n")],
+   "FAIL: TestADirectoryOnOneSideIsNamedOnceAndNotDescendedInto"),
+   # rig: TestADirectoryOnOneSideIsNamedOnceAndNotDescendedInto
+
+ # The directory arm's own idempotency fixed point. Without the empty check a
+ # tree whose every file matches still returns a differing result with an empty
+ # detail, so the user is prompted about an unchanged directory on every run --
+ # the same failure shape as the byte fast path above, one arm over.
+ ("an identical tree still reports detail", [repl(TD,
+   "\tif found.empty() {\n\t\treturn identical()\n\t}\n", "")],
+   "FAIL: TestTwoIdenticalTreesAreIdentical"),
+   # rig: TestTwoIdenticalDirectoriesAreTheIdempotencyFixedPointToo
+
+ # Promise 6 of appspec/00 is "diff-before-replace": the user is about to be
+ # asked whether to replace the DESTINATION with the source, so the destination
+ # is the "before" whose lines are removed. Printed the other way round, every
+ # "+" names a line that is about to be deleted -- which is a diff that is
+ # wrong in the one direction it is shown for.
+ ("the diff runs source-to-destination", [repl(DR,
+   "\treturn Result{Detail: unified(targetLines, sourceLines, target, source)}, true",
+   "\treturn Result{Detail: unified(sourceLines, targetLines, source, target)}, true")],
+   "FAIL: TestTwoPropertyListsThatDifferProduceADiffOfTheirStructures"),
+   # rig: TestAPropertyListDiffShowsTheStructureAndNotTheMarkup
+
+ # PARKED, with what each is waiting on. Every mutation below was injected on
+ # dpz.2 and its killing UNIT case recorded, so none of this has to be
+ # re-derived -- what is missing in each case is a conformance case, and the
+ # ticket that owes it is named. Writing them now would report RIG-BLIND, which
+ # is a battery failure wearing a finding's clothes.
+ #
+ # Waiting on a conformance case for the DIFF SHAPE. The suite asserts that a
+ # diff appears and which side each line is on; nothing at the boundary pins
+ # the context width, the hunk merge, the range spelling or the per-line level.
+ #
  #   the diff has one line of context             context 3 -> 1
  #       TestTheDiffIsTheOneDiffWouldHavePrinted
  #   hunks never merge                            the neighbourhood marked is i..i
@@ -1143,18 +1343,39 @@ MUTATIONS = [
  #       TestAOneLineRangeOmitsItsCount
  #   an empty range is numbered from one          span's zero arm uses start+1
  #       TestAnEmptyRangeIsNumberedTheWayDiffNumbersIt
- #   the search bound is removed                  maxEdits clamp deleted
- #       TestTwoFilesWithNothingInCommonFallBackToAWholeFileReplacement
- #   the bound is one edit short                  maxEdits 1000 -> 999
- #       TestASearchThatFinishesAtExactlyTheBoundIsStillReadCorrectly
- #   the search array is sized by the files       furthest sized 2*(n+m)+1
- #       TestTheSearchsMemoryIsAFunctionOfTheBoundAndNotOfTheFiles
  #   a context line is printed as an addition     Progress -> DiffAdded in render
  #       TestEachKindOfDiffLineCarriesTheLevelAppspec07GivesIt
- #   the diff runs source-to-destination          unified's two sides exchanged
- #       TestTwoPropertyListsThatDifferProduceADiffOfTheirStructures
+ #   the no-newline marker is not emitted         markIncomplete returns unchanged
+ #       TestTwoFilesDifferingOnlyInAFinalNewlineDifferAndSayHow
  #
- # internal/plist, which exists for appspec/06's "both parse as plist files"
+ # Waiting on a conformance case for the TREE DETAIL. The existing directory
+ # cases have no equal-size pair and no fixture in which the sort is
+ # load-bearing, so both of these survive the rig today.
+ #
+ #   a tree comparison stops at the file sizes    sameContents returns on equal sizes
+ #       TestADirectoryComparisonIsRecursiveAndNotAShallowStat
+ #   the three lists are not sorted               lines' sort.Strings removed
+ #       TestADirectoryComparisonListsTheThreeGroupsAppspec06AsksFor
+ #
+ # Waiting on a UNIX-tagged conformance case. Both are about a path the process
+ # cannot read, which needs a mode-0000 fixture and so belongs beside the FIFO
+ # case in harness_unix_test.go rather than in the portable suite.
+ #
+ #   an unreadable file is reported as agreement  compareFiles' differs() -> identical()
+ #       TestAnUnreadableFileIsDifferingWithNoDetail
+ #   an unreadable subdirectory ends the walk     walk's false result ignored
+ #       TestAnUnreadableDirectoryInsideATreeIsAChangedEntryRatherThanTheEndOfTheWalk
+ #
+ # Waiting on conformance cases for internal/plist, which the rig reaches only
+ # through the plist arm of Compare. The observable at the boundary is always
+ # the same shape: a refused plist falls back to the byte comparison and prints
+ # "binary contents differ", while a mutated reader crashes, hangs, or prints a
+ # plist diff of a file that is not one. internal/plist/testdata's settings.plist
+ # and settings.binary.plist are one document in both spellings and already hold
+ # a date, a negative integer, a 2^32 integer, a surrogate pair, sixteen keys
+ # and a <data>, so ONE case borrowing them the way config_test.go borrows
+ # internal/storage/testdata unlocks the first four at once.
+ #
  #   the date epoch is Unix's                     appleEpoch 2001 -> 1970
  #       TestEveryPropertyListTypeIsReadBackFromBothSpellings
  #   an eight-byte integer is read unsigned       integer's sign bit masked off
@@ -1194,8 +1415,9 @@ MUTATIONS = [
  #   the charge multiplies instead of dividing    spend's budget/each -> units*each
  #       TestAChargeTooLargeToPayIsRefusedRatherThanWrapped
  #
- # One entry has no killing CASE and is listed with what it has, because the
- # alternative is to leave it out and let the next reader think it was missed:
+ # One plist entry has no killing CASE and is listed with what it has, because
+ # the alternative is to leave it out and let the next reader think it was
+ # missed:
  #
  #   the cycle guard is removed                   object's r.open check deleted
  #       killed by the gate, not by a case. A self-referential array recurses
@@ -1204,6 +1426,23 @@ MUTATIONS = [
  #       with it. TestABinaryPropertyListThatContainsItselfIsRefused holds a
  #       timeout arm for the other shape of the same defect -- one that returns
  #       eventually -- and that arm names the case when it fires.
+ #
+ # PARKED FOR A REASON THAT IS NOT A MISSING CASE. These three are about the
+ # diff search, and no case anywhere can see them today.
+ #
+ #   the search array is sized by the files       furthest sized 2*(n+m)+1
+ #       A claim about memory only. TestTheSearchsMemoryIsAFunctionOfTheBoundAnd
+ #       NotOfTheFiles states it inside the package; nothing at the boundary can
+ #       observe an allocation, so this is a unit-only property by nature.
+ #   the search bound is removed                  maxEdits clamp deleted
+ #       TestTwoFilesWithNothingInCommonFallBackToAWholeFileReplacement
+ #   the bound is one edit short                  maxEdits 1000 -> 999
+ #       TestASearchThatFinishesAtExactlyTheBoundIsStillReadCorrectly
+ #       The last two need a conformance fixture whose edit distance exceeds
+ #       1000 lines, and it is NOT established that the bounded whole-file
+ #       replacement and the unbounded Myers script differ observably on one.
+ #       Build the fixture, inject by hand, and only then write the entries --
+ #       in that order, since the entry is worth nothing if the two agree.
  #
  # Two mutations were injected and are NOT listed as entries, because they
  # survived and deserve to. Recorded so the next reader does not rediscover
