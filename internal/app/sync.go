@@ -366,14 +366,15 @@ func (r *syncRun) file(relative string) error {
 
 // progress prints this direction's progress line through the executor.
 //
-// appspec/06 gives backup and restore the same word in both forms, so the pair
-// handed over holds one word twice. Spelled here rather than stored on the
+// appspec/06 gives backup and restore the same word in both forms and the same
+// four-line verbose shape link install prints, so the form handed over is
+// copyProgress with one word twice. Built here rather than stored on the
 // direction record, because the record is appspec/06's direction TABLE and that
 // table has one verb column; a second, always-equal column would read as a
 // difference between backup and restore that appspec/01 section 1 says must not
 // exist.
 func (r *syncRun) progress(relative, src, dst string) {
-	r.executor.progress(progressVerbs{short: r.dir.verb, long: r.dir.verb}, relative, src, dst)
+	r.executor.progress(copyProgress(r.dir.verb, r.dir.verb), relative, src, dst)
 }
 
 // copy performs the one mutation of the per-file procedure and records a

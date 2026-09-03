@@ -35,14 +35,19 @@ display name and a sorted, home-relative file set, and both fail exactly as
 `backup` does when the config is broken or the storage folder is not there —
 which is the point of putting them behind the same gates.
 
-Three of the five sync commands are written. `backup` and `restore` are one
+Four of the five sync commands are written. `backup` and `restore` are one
 copy operation parameterized by a direction record, with drift detection, the
 diff shown before a replace prompt, and the partial-failure contract that keeps
-a run that could not copy everything from exiting 0. `link install` is the
-first of the link strategy: it moves each home file into the Mackup folder and
-leaves a symlink in its place, which is the transition that inverts where the
-source of truth lives. `link` and `link uninstall` still report themselves as
-unimplemented.
+a run that could not copy everything from exiting 0. `link install` and `link`
+are the link strategy's two entry doors, and the spec is emphatic that they are
+different contracts rather than one command with a flag: `link install` is for
+the machine that has the real files, moving each of them into the Mackup folder
+and leaving a symlink in its place, which is the transition that inverts where
+the source of truth lives; `link` is for a second machine that already sees the
+shared folder, creating the symlinks from content that is already there and
+moving nothing out of home. `link uninstall` still reports itself as
+unimplemented, and so does the whole-Mackup ceremony that an unscoped `link`
+runs before the per-application procedure.
 
 ## Implementation
 
@@ -254,9 +259,9 @@ block any case matches on. `ExpectNotImplemented` matches the dispatch stub's
 asserted positively rather than as the absence of a usage error; each use is
 replaced by an assertion on the command's real behavior as that command's
 ticket lands. That replacement has now happened for `list` and `show`, whose
-cases assert the `appspec/05` output formats instead, and the remaining uses
-are the five sync verbs. Reword either token and the suite fails — which is
-the point, but know where to look.
+cases assert the `appspec/05` output formats instead, and for the four sync
+verbs that have landed; the remaining uses are `link uninstall`. Reword either
+token and the suite fails — which is the point, but know where to look.
 
 `--version` reports the package's own version when one was stamped in, and the
 fallback token `unknown` otherwise, per the spec's provenance rule.

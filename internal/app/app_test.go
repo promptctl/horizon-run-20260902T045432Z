@@ -231,15 +231,13 @@ func TestBareInvocationShowsUsage(t *testing.T) {
 }
 
 func TestSubcommandsReachDispatch(t *testing.T) {
-	// Until the remaining link tickets land, `link` and `link uninstall`
-	// report that they are unimplemented -- but they do so from dispatch,
-	// which proves argv carried them through the whole pipeline. list, show,
-	// backup, restore and link install are no longer in this list because they
-	// now do their work; the cases elsewhere assert that, which is the same
-	// claim in its final form.
+	// Until the last link ticket lands, `link uninstall` reports that it is
+	// unimplemented -- but it does so from dispatch, which proves argv carried
+	// it through the whole pipeline. list, show, backup, restore, link install
+	// and link are no longer in this list because they now do their work; the
+	// cases elsewhere assert that, which is the same claim in its final form.
 	for _, argv := range [][]string{
-		{"link"},
-		{"link", "vim"},
+		{"link", "uninstall"},
 		{"link", "uninstall", "vim"},
 	} {
 		got := run(argv...)

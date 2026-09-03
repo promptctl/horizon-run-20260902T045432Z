@@ -6,11 +6,11 @@ import (
 )
 
 // dispatch runs the subcommand argv selected. The two enumeration commands of
-// appspec/05, the one copy operation of appspec/06 and its `link install` are
-// implemented; each remaining arm is filled in by the ticket named beside it,
-// and until then reports that it is not implemented on stderr and exits
-// non-zero, so no caller can mistake an unimplemented verb for a completed
-// action.
+// appspec/05, the one copy operation of appspec/06 and two of its three link
+// commands are implemented; the remaining arm is filled in by the ticket named
+// beside it, and until then reports that it is not implemented on stderr and
+// exits non-zero, so no caller can mistake an unimplemented verb for a
+// completed action.
 //
 // Everything the startup pipeline resolved arrives as one value: every command
 // reads the same application database, and appspec/01 section 4 assembles it
@@ -30,6 +30,12 @@ import (
 // copy one does not have -- it deletes the home file and puts a symlink in its
 // place. Parameterizing one function to do both would put that delete behind a
 // flag inside the procedure appspec/01 section 1 says must not branch.
+//
+// link is a third call for the same reason one door further along: appspec/00
+// calls link install and link "two entry doors" whose "distinction is a real
+// user-facing contract" and names collapsing them as one of the ways to build a
+// different product. They share the run (linkRun) and every primitive; what
+// they do not share is which end is the source.
 func dispatch(p pipeline) int {
 	inv, streams, apps := p.inv, p.streams, p.apps
 	switch inv.Cmd {
@@ -51,9 +57,7 @@ func dispatch(p pipeline) int {
 	case cli.CmdLinkInstall:
 		return runLinkInstall(p)
 	case cli.CmdLink:
-		// TODO(macklebox-link-sync-83q.3): symlink files already in storage
-		// into home, moving nothing out of home.
-		return notImplemented(inv, streams)
+		return runLink(p)
 	case cli.CmdLinkUninstall:
 		// TODO(macklebox-link-sync-83q.4): revert links to real files, and
 		// refuse to clobber a file the user substituted.
