@@ -125,3 +125,57 @@ func TestAStorageRootThatCannotBeInspectedIsNotReportedAsMissing(t *testing.T) {
 			result.Stderr, missingRootError)
 	}
 }
+
+func TestASourceThatCannotBeInspectedIsAFailureAndNotAnAbsence(t *testing.T) {
+	// appspec/06 step 1 skips a source that "does not exist as a regular file
+	// or directory" SILENTLY. A stat that fails for any reason other than
+	// ENOENT has not established that, and reading it as absence is the worst
+	// shape this defect takes anywhere in the program: no line, no record, and
+	// a run that exits 0 having quietly not copied the user's file. appspec/01
+	// section 5 forbids exactly that outcome -- "A partial backup/restore can
+	// never exit 0" -- so the exit code is the assertion, not decoration.
+	//
+	// The arrangement is the file's own PARENT without its search bit, which is
+	// the folder-gate cases' arrangement one level in: a home tree synced from
+	// another machine's account carries modes this process cannot use. Stat of
+	// the file returns EACCES, not ENOENT.
+	//
+	// Both directions, because step 1 asks the same question of whichever side
+	// the direction record makes the source, and the carry-on file after it in
+	// sorted order shows the failure was routed into the partial-failure
+	// contract rather than ending the run.
+	for _, command := range []string{"backup", "restore"} {
+		world := newSyncWorld(t, ".probdir/inner", ".zprobrc")
+		var source, destination string
+		if command == "backup" {
+			source = world.WriteFile(".probdir/inner", "home\n", 0o600)
+			world.WriteFile(".zprobrc", "carried on\n", 0o600)
+			destination = world.Mackup(".probdir", "inner")
+			denySearch(t, world.Path(".probdir"), "inner")
+		} else {
+			source = world.WriteMackup(".probdir/inner", "storage\n", 0o600)
+			world.WriteMackup(".zprobrc", "carried on\n", 0o600)
+			destination = world.Path(".probdir", "inner")
+			denySearch(t, world.Mackup(".probdir"), "inner")
+		}
+
+		result := world.Run(command, probeKey).ExpectExit(1)
+
+		stderr := result.StderrText()
+		if want := copyFailurePrefix + source + " to " + destination + ": "; !strings.Contains(stderr, want) {
+			t.Errorf("%s stderr = %q, want the per-file failure line %q for a source it could not stat", command, result.Stderr, want)
+		}
+		if want := "1 file(s) could not be copied:"; !strings.Contains(stderr, want) {
+			t.Errorf("%s stderr = %q, want the end-of-run summary %q", command, result.Stderr, want)
+		}
+		if want := "\n  " + source; !strings.Contains(stderr, want) {
+			t.Errorf("%s stderr = %q, want the failed path listed under the summary as %q", command, result.Stderr, want)
+		}
+		// The run carried on rather than stopping at the file it could not read.
+		if command == "backup" {
+			expectContent(t, world.Mackup(".zprobrc"), "carried on\n")
+		} else {
+			expectContent(t, world.Path(".zprobrc"), "carried on\n")
+		}
+	}
+}

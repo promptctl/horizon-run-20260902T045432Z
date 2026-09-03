@@ -1379,9 +1379,12 @@ func TestAFileThatCannotBeCopiedIsReportedAndTheRunCarriesOnAndExitsOne(t *testi
 	// Both directions, because the summary noun is a column of the direction
 	// record. The failure is arranged by putting a REGULAR FILE where the
 	// destination's parent directory belongs, which is portable and needs no
-	// permission games: creating the parent fails, so the copy fails, and the
-	// program is asked the question the contract is about -- does one bad file
-	// end the run? The file after it in sorted order is the answer.
+	// permission games: the destination's stat returns ENOTDIR, and the
+	// uninspectable-destination guard reports that as a copy failure before
+	// syncfs.Copy is reached. What is asserted here is what happens AFTER a
+	// per-file failure, whatever raised it -- does one bad file end the run?
+	// The file after it in sorted order is the answer. The case below reaches
+	// the same contract through the copy itself.
 	for _, test := range []struct {
 		command string
 		summary string
@@ -1418,6 +1421,77 @@ func TestAFileThatCannotBeCopiedIsReportedAndTheRunCarriesOnAndExitsOne(t *testi
 		// The run carried on: the file after the failure in sorted order was
 		// copied, which is the whole of "failures flow up as data, not as
 		// control flow".
+		if test.command == "backup" {
+			expectContent(t, world.Mackup(".zprobrc"), "carried on\n")
+		} else {
+			expectContent(t, world.Path(".zprobrc"), "carried on\n")
+		}
+	}
+}
+
+func TestACopyThatFailsInsideTheCopyItselfIsReportedAndTheRunCarriesOn(t *testing.T) {
+	// The partial-failure contract's ORIGINAL arm: syncfs.Copy was called, the
+	// destination was fine, and the copy failed anyway. Every other case about
+	// the contract arranges a regular file where the destination's parent
+	// belongs, and since the uninspectable-destination guard landed, that stat
+	// returns ENOTDIR and the guard reports the failure one branch EARLIER --
+	// so syncRun.copy's own error branch had no case over it at all. Gutting it
+	// to `if err := syncfs.Copy(src, dst); err != nil { _ = err }` passed both
+	// suites, which is what this case exists to stop.
+	//
+	// The arrangement is a source DIRECTORY holding a dangling symlink. The
+	// destination does not exist and stats cleanly as absent, so the guard does
+	// not fire and step 4 copies; inside, copyTree stats the link's target,
+	// finds nothing, and raises the "not a regular file or directory" refusal
+	// its own comment promises will surface "as an ordinary per-file copy
+	// failure". Portable, and no permission games -- so unlike the folder-gate
+	// cases this one runs as any user.
+	//
+	// The destination directory's existence afterwards is the assertion that
+	// separates this case from the guard cases: MkdirAll runs INSIDE
+	// syncfs.Copy, so a destination folder that is there is proof the run got
+	// past the guard and into the copy. A guard failure mutates nothing.
+	for _, test := range []struct {
+		command string
+		summary string
+	}{
+		{"backup", backupIncomplete},
+		{"restore", restoreIncomplete},
+	} {
+		world := newSyncWorld(t, ".probdir", ".zprobrc")
+		var source, destination string
+		if test.command == "backup" {
+			source = world.Path(".probdir")
+			world.WriteFile(".probdir/keep", "kept\n", 0o600)
+			symlink(t, world.Path("nowhere"), world.Path(".probdir", "dangling"))
+			world.WriteFile(".zprobrc", "carried on\n", 0o600)
+			destination = world.Mackup(".probdir")
+		} else {
+			source = world.Mackup(".probdir")
+			world.WriteMackup(".probdir/keep", "kept\n", 0o600)
+			symlink(t, world.Path("nowhere"), world.Mackup(".probdir", "dangling"))
+			world.WriteMackup(".zprobrc", "carried on\n", 0o600)
+			destination = world.Path(".probdir")
+		}
+
+		result := world.Run(test.command, probeKey).ExpectExit(1)
+
+		stderr := result.StderrText()
+		if want := copyFailurePrefix + source + " to " + destination + ": "; !strings.Contains(stderr, want) {
+			t.Errorf("%s stderr = %q, want the per-file failure line %q", test.command, result.Stderr, want)
+		}
+		if want := test.summary + "1 file(s) could not be copied:"; !strings.Contains(stderr, want) {
+			t.Errorf("%s stderr = %q, want the end-of-run summary %q", test.command, result.Stderr, want)
+		}
+		if want := "\n  " + source; !strings.Contains(stderr, want) {
+			t.Errorf("%s stderr = %q, want the failed path listed under the summary as %q", test.command, result.Stderr, want)
+		}
+		// The copy was entered, not refused ahead of time.
+		if info, err := os.Stat(destination); err != nil || !info.IsDir() {
+			t.Errorf("%s: %s is not a directory (%v), so the run never reached syncfs.Copy and this case is asserting the guard instead",
+				test.command, destination, err)
+		}
+		// The run carried on to the file after it in sorted order.
 		if test.command == "backup" {
 			expectContent(t, world.Mackup(".zprobrc"), "carried on\n")
 		} else {

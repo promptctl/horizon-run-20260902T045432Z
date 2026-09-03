@@ -1393,6 +1393,47 @@ MUTATIONS = [
    "FAIL: TestAStorageRootThatCannotBeInspectedIsNotReportedAsMissing"),
    # rig: TestAStorageRootThatCannotBeInspectedIsNotReportedAsMissing
 
+ # --- appspec/06 step 1 and the copy arm: what the round-7 review of PR #10
+ # found the round-4 fix had left behind
+ #
+ # The same stat conflation ONE MORE TIME, on the last side that still had it,
+ # and the review found it by asking the round-4 question of the source instead
+ # of the destination. This is the worst place it lived: a destination read as
+ # absent at least printed a line, and a SOURCE read as absent is skipped
+ # silently and the run exits 0 -- the one outcome appspec/01 section 5 states
+ # unconditionally ("A partial backup/restore can never exit 0").
+ #
+ # `expect` is the UNIT diagnostic: internal/app/sync_test.go asks sourcePresent
+ # the third-answer question directly, so make check stops before the
+ # conformance stage. The [rig: ...] note carries the conformance half, which is
+ # behind `unix` because only a permission arranges EACCES on a source. Both
+ # halves observed by injection.
+ ("an uninspectable source is read as an absent one", [
+   repl(SN, "	info, err := os.Stat(path)\n	if errors.Is(err, fs.ErrNotExist) {\n		return false, nil\n	}\n	if err != nil {\n		return false, err\n	}\n",
+            "	info, err := os.Stat(path)\n	if err != nil {\n		return false, nil\n	}\n")],
+   "FAIL: TestStepOnesTestAdmitsFilesAndDirectoriesAndFollowsSymlinks"),
+   # rig: TestASourceThatCannotBeInspectedIsAFailureAndNotAnAbsence
+
+ # The partial-failure contract's ORIGINAL arm, which the round-4 guard made
+ # unreachable without anyone noticing. Every case that exercised the contract
+ # arranged a regular file where the destination's parent belongs; that stat
+ # returns ENOTDIR, so after round 4 the guard reported the failure one branch
+ # earlier and syncfs.Copy was never called. This mutation SURVIVED both suites
+ # when the review named it -- the arm that records a real copy failure had
+ # neither a case nor an entry over it.
+ #
+ # `expect` is the CONFORMANCE diagnostic, probed rather than predicted: the
+ # unit packages are green under this mutation, so make check reaches the
+ # conformance stage. The case it names arranges a source directory holding a
+ # DANGLING SYMLINK, so copyTree raises its "not a regular file or directory"
+ # refusal with a destination that stats cleanly as absent -- the guard does not
+ # fire and the copy itself is what fails.
+ ("a copy failure inside the copy is swallowed", [repl(SN,
+   "	if err := syncfs.Copy(src, dst); err != nil {\n		r.fail(src, dst, err)\n	}",
+   "	if err := syncfs.Copy(src, dst); err != nil {\n		_ = err\n	}")],
+   "FAIL: TestACopyThatFailsInsideTheCopyItselfIsReportedAndTheRunCarriesOn"),
+   # rig: TestACopyThatFailsInsideTheCopyItselfIsReportedAndTheRunCarriesOn
+
  # --- appspec/06 drift detection and the diff detail (macklebox-copy-sync-dpz.2)
  #
  # The other deferral, paid the same way. internal/drift and internal/plist

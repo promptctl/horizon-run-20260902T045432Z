@@ -408,9 +408,24 @@ func TestStepOnesTestAdmitsFilesAndDirectoriesAndFollowsSymlinks(t *testing.T) {
 		{"a dangling symlink", dangling, false},
 		{"nothing at all", filepath.Join(root, "absent"), false},
 	} {
-		if got := existsAsFileOrDirectory(test.path); got != test.want {
-			t.Errorf("existsAsFileOrDirectory(%s) = %v, want %v", test.what, got, test.want)
+		got, err := sourcePresent(test.path)
+		if err != nil {
+			t.Errorf("sourcePresent(%s) errored: %v -- every row here is a path the stat can read", test.what, err)
+			continue
 		}
+		if got != test.want {
+			t.Errorf("sourcePresent(%s) = %v, want %v", test.what, got, test.want)
+		}
+	}
+
+	// The third answer, which the rows above cannot express: a stat that failed
+	// for a reason other than absence is neither true nor false. A path UNDER a
+	// regular file is the portable way to get one -- ENOTDIR, not ENOENT -- and
+	// the conformance suite's unix cases carry the EACCES shape a real home
+	// reaches this through. Returning false here is what let step 1 skip a
+	// file it could not read, silently, and still exit 0.
+	if _, err := sourcePresent(filepath.Join(file, "under-a-file")); err == nil {
+		t.Errorf("sourcePresent(a path under a regular file) returned no error, want the stat failure reported rather than read as absence")
 	}
 }
 

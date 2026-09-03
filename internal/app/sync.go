@@ -324,7 +324,15 @@ func (r *syncRun) file(relative string) error {
 	// specification does not have, printed once per unconfigured file, which
 	// on a 614-application catalog is thousands of lines of the program saying
 	// nothing happened.
-	if !existsAsFileOrDirectory(src) {
+	//
+	// A stat that failed for any reason OTHER than absence is the third
+	// answer, and it is a failure rather than a skip. See sourcePresent.
+	present, err := sourcePresent(src)
+	if err != nil {
+		r.fail(src, dst, err)
+		return nil
+	}
+	if !present {
 		return nil
 	}
 
@@ -561,18 +569,41 @@ func (r *syncRun) report() int {
 	return ExitFailure
 }
 
-// existsAsFileOrDirectory is appspec/06's step-1 test, worded as that step
-// words it.
+// sourcePresent is appspec/06's step-1 test, worded as that step words it, plus
+// the third answer the step's wording assumes away.
 //
 // It follows symlinks, and the per-file procedure explains why. A shared helper
 // rather than an inline stat so that the step-1 question and syncfs.Copy's
 // classification are visibly the same question.
-func existsAsFileOrDirectory(path string) bool {
+//
+// The (bool, error) shape is folderPresent's, for folderPresent's reason: a
+// stat that fails for anything but ENOENT establishes NEITHER answer, and
+// returning false for it makes step 1 assert something the program never found
+// out. Here the cost is the worst in the file. A source read as absent is
+// skipped SILENTLY -- no line, nothing recorded in r.failed -- so a home file
+// under a directory whose search bit another machine's account cleared, or a
+// path on a network mount answering ESTALE, is not copied and the run still
+// exits 0. appspec/01 section 5 is unconditional about that outcome: "A partial
+// backup/restore can never exit 0", and appspec/00 promise 9 gives the reason a
+// user feels -- "a clean exit means everything the user asked for is in place".
+// Silence plus exit 0 is strictly worse than the destination case above, which
+// at least printed a line.
+//
+// This diverges from the reference, which reaches step 1 through Python's
+// os.path.isfile/isdir and so answers false for every stat error. It is the
+// same reference defect the folder and storage-root gates carry, fixed the same
+// way and for a stronger reason: there the divergence only moved a diagnostic,
+// and here the reference contradicts a contract its own specification states.
+// A run whose sources are all inspectable is byte-identical either way.
+func sourcePresent(path string) (bool, error) {
 	info, err := os.Stat(path)
-	if err != nil {
-		return false
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
 	}
-	return info.Mode().IsRegular() || info.IsDir()
+	if err != nil {
+		return false, err
+	}
+	return info.Mode().IsRegular() || info.IsDir(), nil
 }
 
 // typeNoun is the <type> of appspec/07's prompts: "one of file, folder, or
