@@ -1145,6 +1145,10 @@ MUTATIONS = [
  #       TestAnEmptyRangeIsNumberedTheWayDiffNumbersIt
  #   the search bound is removed                  maxEdits clamp deleted
  #       TestTwoFilesWithNothingInCommonFallBackToAWholeFileReplacement
+ #   the bound is one edit short                  maxEdits 1000 -> 999
+ #       TestASearchThatFinishesAtExactlyTheBoundIsStillReadCorrectly
+ #   the search array is sized by the files       furthest sized 2*(n+m)+1
+ #       TestTheSearchsMemoryIsAFunctionOfTheBoundAndNotOfTheFiles
  #   a context line is printed as an addition     Progress -> DiffAdded in render
  #       TestEachKindOfDiffLineCarriesTheLevelAppspec07GivesIt
  #   the diff runs source-to-destination          unified's two sides exchanged
@@ -1201,15 +1205,24 @@ MUTATIONS = [
  #       timeout arm for the other shape of the same defect -- one that returns
  #       eventually -- and that arm names the case when it fires.
  #
- # One mutation was injected and is NOT listed, because it survived and
- # deserves to: it is behaviour-preserving, so an entry for it would be a
- # standing false alarm rather than a hole. Recorded so the next reader does not
- # rediscover it and "fix" the tests to catch what is not there.
+ # Two mutations were injected and are NOT listed as entries, because they
+ # survived and deserve to. Recorded so the next reader does not rediscover
+ # them and "fix" the tests to catch what is not there.
  #
  #   * sameContents' `return firstDone && secondDone` -> `return true`. A chunk
  #     short on one side only is a chunk of a different length, which the byte
  #     comparison immediately above has already rejected, so the conjunction is
- #     implied. The line carries a comment saying so.
+ #     implied. The line carries a comment saying so. Behaviour-preserving.
+ #   * backtrack's `index := k - snapshot.first` -> re-deriving the offset from
+ #     len(before)+len(after) and d, which is how it was spelled before the
+ #     step struct carried its own first diagonal. NOT behaviour-preserving:
+ #     the two disagree by one diagonal on the single step whose window is
+ #     clipped at the start of the array, which is the last one when the search
+ #     finishes at exactly the bound. It is listed here rather than as an entry
+ #     because no input has been found where the value read one diagonal over
+ #     changes the path -- four hundred random shapes in that regime and the
+ #     two constructed ones all agree. The field exists so the question cannot
+ #     arise, not because a case pins it; if one is ever written, promote this.
 ]
 
 

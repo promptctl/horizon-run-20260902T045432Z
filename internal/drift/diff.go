@@ -193,17 +193,25 @@ func middle(before, after []string) []edit {
 // plus the one on either side that the backward pass reads. Snapshotting the
 // whole array instead would cost the length of the FILES on every step, which
 // is the one thing the trimming above is there to avoid paying.
-func search(before, after []string) ([][]int, bool) {
+func search(before, after []string) ([]step, bool) {
 	n, m := len(before), len(after)
 	bound := n + m
 	if bound > maxEdits {
 		bound = maxEdits
 	}
-	// furthest[origin+k] is the furthest x reached on diagonal k = x - y.
-	origin := n + m
-	furthest := make([]int, 2*(n+m)+1)
+	// furthest[origin+k] is the furthest x reached on diagonal k = x - y, and
+	// it is sized by the BOUND rather than by the files -- which is the whole
+	// claim maxEdits makes, and was false here while the array was 2*(n+m)+1:
+	// two half-million-line files with nothing in common allocated 16 MiB
+	// before the search took a step, and the bound then stopped it at a
+	// thousand. Only diagonals -bound..bound are ever reachable. The highest
+	// index touched is origin+d, because the read of origin+k+1 happens only
+	// on the k == -d arm and on k != d and so never reaches origin+d+1; the
+	// lowest is origin-d. Both are inside 2*bound+1 entries.
+	origin := bound
+	furthest := make([]int, 2*bound+1)
 
-	var trace [][]int
+	var trace []step
 	for d := 0; d <= bound; d++ {
 		trace = append(trace, window(furthest, origin, d))
 		for k := -d; k <= d; k += 2 {
@@ -226,9 +234,23 @@ func search(before, after []string) ([][]int, bool) {
 	return nil, false
 }
 
+// A step is one snapshot of the forward pass: the furthest-reaching x on each
+// diagonal it could have touched, and which diagonal the first of them is.
+//
+// first is recorded rather than re-derived. The backward pass needs the offset
+// the snapshot was cut at, and computing it there from the origin and d is the
+// same arithmetic written twice -- which is fine until a window is clipped at
+// the start of the array, as the last one is when the search finishes at
+// exactly the bound, and the two spellings disagree by one about every
+// diagonal in it.
+type step struct {
+	first    int
+	furthest []int
+}
+
 // window copies the diagonals from -(d+1) to d+1 out of the furthest-reaching
 // array, which is every diagonal the backward pass can ask about at step d.
-func window(furthest []int, origin, d int) []int {
+func window(furthest []int, origin, d int) step {
 	low, high := origin-d-1, origin+d+2
 	if low < 0 {
 		low = 0
@@ -243,28 +265,23 @@ func window(furthest []int, origin, d int) []int {
 	// helped, since the allocation is per step either way.
 	snapshot := make([]int, high-low)
 	copy(snapshot, furthest[low:high])
-	return snapshot
+	return step{first: low - origin, furthest: snapshot}
 }
 
 // backtrack walks the recorded steps from the end of both files back to the
 // start, turning the path into a script in reading order.
-func backtrack(before, after []string, trace [][]int) []edit {
-	origin := len(before) + len(after)
+func backtrack(before, after []string, trace []step) []edit {
 	x, y := len(before), len(after)
 
 	var reversed []edit
 	for d := len(trace) - 1; d >= 0; d-- {
-		furthest := trace[d]
-		low := origin - d - 1
-		if low < 0 {
-			low = 0
-		}
+		snapshot := trace[d]
 		at := func(k int) int {
-			index := origin + k - low
-			if index < 0 || index >= len(furthest) {
+			index := k - snapshot.first
+			if index < 0 || index >= len(snapshot.furthest) {
 				return 0
 			}
-			return furthest[index]
+			return snapshot.furthest[index]
 		}
 		k := x - y
 		var previousK int

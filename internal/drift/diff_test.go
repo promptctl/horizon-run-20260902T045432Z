@@ -3,6 +3,7 @@ package drift
 import (
 	"math/rand"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -147,18 +148,7 @@ func TestTheEditScriptRebuildsTheFileItDescribes(t *testing.T) {
 	}
 	for trial := 0; trial < 2000; trial++ {
 		before, after := sequence(random.Intn(12)), sequence(random.Intn(12))
-		var rebuilt, original []string
-		for _, step := range edits(before, after) {
-			switch step.kind {
-			case keep:
-				rebuilt = append(rebuilt, step.text)
-				original = append(original, step.text)
-			case insert:
-				rebuilt = append(rebuilt, step.text)
-			case remove:
-				original = append(original, step.text)
-			}
-		}
+		original, rebuilt := applied(edits(before, after))
 		if !reflect.DeepEqual(nonEmpty(original), nonEmpty(before)) {
 			t.Fatalf("the script's kept and removed lines are %v, want the destination %v", original, before)
 		}
@@ -166,6 +156,25 @@ func TestTheEditScriptRebuildsTheFileItDescribes(t *testing.T) {
 			t.Fatalf("applying the script to %v gave %v, want the source %v", before, rebuilt, after)
 		}
 	}
+}
+
+// applied replays a script, returning the lines it says the destination held
+// and the lines it produces for the source. Both halves matter: a script that
+// rebuilt the source out of the wrong original describes an edit between two
+// files that are not the ones compared.
+func applied(script []edit) (original, rebuilt []string) {
+	for _, step := range script {
+		switch step.kind {
+		case keep:
+			rebuilt = append(rebuilt, step.text)
+			original = append(original, step.text)
+		case insert:
+			rebuilt = append(rebuilt, step.text)
+		case remove:
+			original = append(original, step.text)
+		}
+	}
+	return original, rebuilt
 }
 
 // nonEmpty maps a nil slice and an empty one to the same value, so that
@@ -265,6 +274,141 @@ func TestTwoFilesWithNothingInCommonFallBackToAWholeFileReplacement(t *testing.T
 	}
 	if counts[ui.Progress] != 1 {
 		t.Fatalf("the fallback kept %d context lines, want only the trimmed common suffix", counts[ui.Progress])
+	}
+}
+
+func TestALongFileWithATinyChangeAtEachEndStillDiffsMinimally(t *testing.T) {
+	// The one shape where the search runs on more lines than maxEdits and
+	// still finishes inside the bound: trimming buys nothing because the two
+	// files differ at the first line and at the last, but what is between them
+	// is identical, so the edit distance is four. n+m is 2004 and d is 4.
+	//
+	// It is here because backtrack derives its own origin and must reach the
+	// same value the search used. Every other case has n+m below maxEdits,
+	// where the clamp is a no-op and an origin that ignored it would look
+	// correct; this one reads every recorded step at the wrong offset without
+	// it, and answers with a script that is not the shortest and need not even
+	// rebuild the file.
+	const common = 1000
+	before := make([]string, 0, common+2)
+	after := make([]string, 0, common+2)
+	before = append(before, "head of the destination")
+	after = append(after, "head of the source")
+	for i := 0; i < common; i++ {
+		before = append(before, "line "+strconv.Itoa(i))
+		after = append(after, "line "+strconv.Itoa(i))
+	}
+	before = append(before, "tail of the destination")
+	after = append(after, "tail of the source")
+
+	lines := unified(before, after, "target", "source")
+	counts := map[ui.Level]int{}
+	for _, line := range lines {
+		counts[line.Level]++
+	}
+	// One line at each end, both ways.
+	if counts[ui.DiffRemoved] != 2 || counts[ui.DiffAdded] != 2 {
+		t.Errorf("the diff removed %d lines and added %d, want two of each:\n%s",
+			counts[ui.DiffRemoved], counts[ui.DiffAdded], text(lines))
+	}
+	// Two hunks: the ends are a thousand lines apart, far past the context
+	// either side would need to merge them.
+	if counts[ui.DiffHunk] != 2 {
+		t.Errorf("the diff has %d hunks, want one at each end:\n%s", counts[ui.DiffHunk], text(lines))
+	}
+	original, rebuilt := applied(edits(before, after))
+	if !reflect.DeepEqual(original, before) || !reflect.DeepEqual(rebuilt, after) {
+		t.Error("the script does not describe an edit between the two files it was given")
+	}
+}
+
+func TestASearchThatFinishesAtExactlyTheBoundIsStillReadCorrectly(t *testing.T) {
+	// The boundary of maxEdits from the inside. The case below it pins what
+	// happens PAST the bound, where the answer is the whole-file fallback, and
+	// a bound checked from one side only is a bound that is off by one and
+	// says nothing -- so this pins that a search finishing on its last
+	// permitted step still produces the minimal script rather than falling
+	// back. It is also the only step whose snapshot is clipped at the start of
+	// the furthest-reaching array, which is the step a backward pass that
+	// re-derived its offset would read one diagonal out.
+	//
+	// So: four hundred and ninety-nine lines changed at the head, one at the
+	// tail, two thousand identical between them. Trimming buys nothing because
+	// both ends differ, leaving n+m at five thousand, well past maxEdits; the
+	// edit distance is exactly a thousand, so the search finishes on its last
+	// permitted step rather than falling back.
+	const head = 499
+	const common = 2000
+	before := make([]string, 0, head+common+1)
+	after := make([]string, 0, head+common+1)
+	for i := 0; i < head; i++ {
+		before = append(before, "destination "+strconv.Itoa(i))
+		after = append(after, "source "+strconv.Itoa(i))
+	}
+	for i := 0; i < common; i++ {
+		before = append(before, "line "+strconv.Itoa(i))
+		after = append(after, "line "+strconv.Itoa(i))
+	}
+	before = append(before, "tail of the destination")
+	after = append(after, "tail of the source")
+
+	script := edits(before, after)
+	changes := 0
+	for _, step := range script {
+		if step.kind != keep {
+			changes++
+		}
+	}
+	// Exactly the bound: one more and this would be the fallback, whose script
+	// is every line of both files and which would pass a weaker assertion.
+	if changes != maxEdits {
+		t.Errorf("the script took %d edits, want the %d that reach the bound exactly", changes, maxEdits)
+	}
+	original, rebuilt := applied(script)
+	if !reflect.DeepEqual(original, before) || !reflect.DeepEqual(rebuilt, after) {
+		t.Error("the script does not describe an edit between the two files it was given")
+	}
+}
+
+func TestTheSearchsMemoryIsAFunctionOfTheBoundAndNotOfTheFiles(t *testing.T) {
+	// The claim maxEdits makes, and the one three comments in diff.go make
+	// about it: past the bound the search's cost is the bound's, whatever the
+	// files are. It was false while the furthest-reaching array was sized
+	// 2*(len(before)+len(after))+1 -- in exactly the case the bound exists
+	// for, two files with nothing in common, that array is the largest
+	// allocation the search makes and grows with the input while the bound
+	// stays a constant.
+	//
+	// Stated as growth rather than as a ceiling on purpose. The search
+	// legitimately allocates a few megabytes of per-step snapshots at
+	// maxEdits, which is bound-shaped and correct; a case written against an
+	// absolute figure would be pinning that constant instead of this property.
+	distinct := func(count int, side string) []string {
+		lines := make([]string, count)
+		for i := range lines {
+			lines[i] = side + strconv.Itoa(i)
+		}
+		return lines
+	}
+	cost := func(count int) uint64 {
+		before, after := distinct(count, "before "), distinct(count, "after ")
+		var start, end runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&start)
+		if _, complete := search(before, after); complete {
+			t.Fatalf("%d lines with nothing in common completed within the bound", count)
+		}
+		runtime.ReadMemStats(&end)
+		return end.TotalAlloc - start.TotalAlloc
+	}
+
+	small := cost(2 * maxEdits)
+	large := cost(200 * maxEdits)
+	// A megabyte of slack for the allocator, against the eight-plus megabytes
+	// the unbounded array cost at this size.
+	if large > small+1<<20 {
+		t.Errorf("the search allocated %d bytes on %d lines and %d on %d: it is sized by the files, not by the bound",
+			large, 200*maxEdits, small, 2*maxEdits)
 	}
 }
 
